@@ -1,0 +1,521 @@
+import SafariServices
+import UIKit
+import WebKit
+
+final class WebViewController: UIViewController {
+    private enum Keys {
+        static let lastURL = "GPTWeb.lastFirstPartyURL"
+    }
+
+    private lazy var webView: WKWebView = makeWebView()
+    private let progressView = UIProgressView(progressViewStyle: .bar)
+    private let errorView = LoadingErrorView()
+    private let connectivityMonitor = ConnectivityMonitor()
+
+    private var observations: [NSKeyValueObservation] = []
+    private var isConnected = true
+    private var lastLoadFailed = false
+    private var recoveryAttempts: [Date] = []
+    private var downloadDestinations: [ObjectIdentifier: URL] = [:]
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        configureView()
+        configureObservers()
+        configureConnectivity()
+        loadInitialPage()
+    }
+
+    deinit {
+        observations.forEach { $0.invalidate() }
+        connectivityMonitor.cancel()
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        view.backgroundColor = .systemBackground
+        webView.backgroundColor = .systemBackground
+    }
+
+    func refreshIfNeeded() {
+        guard isViewLoaded else { return }
+        if webView.url == nil {
+            loadInitialPage()
+        } else if lastLoadFailed && isConnected {
+            reloadCurrentPage()
+        }
+    }
+
+    func prepareForBackground() {
+        guard isViewLoaded else { return }
+        webView.evaluateJavaScript(
+            "document.querySelectorAll('video,audio').forEach(function(media){ media.pause(); });",
+            completionHandler: nil
+        )
+    }
+
+    private func makeWebView() -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.processPool = WebSession.shared.processPool
+        configuration.websiteDataStore = .default()
+        configuration.allowsInlineMediaPlayback = true
+        configuration.allowsAirPlayForMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.suppressesIncrementalRendering = false
+
+        let preferences = WKWebpagePreferences()
+        preferences.allowsContentJavaScript = true
+        preferences.preferredContentMode = .mobile
+        configuration.defaultWebpagePreferences = preferences
+
+        let contentController = WKUserContentController()
+        contentController.addUserScript(WKUserScript(
+            source: Self.compatibilityScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
+        configuration.userContentController = contentController
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.customUserAgent = Self.mobileSafariUserAgent
+        webView.allowsBackForwardNavigationGestures = true
+        webView.allowsLinkPreview = true
+        webView.isOpaque = false
+        webView.backgroundColor = .systemBackground
+        webView.scrollView.backgroundColor = .systemBackground
+        webView.scrollView.keyboardDismissMode = .interactive
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = true
+        return webView
+    }
+
+    private func configureView() {
+        view.backgroundColor = .systemBackground
+
+        progressView.translatesAutoresizingMaskIntoConstraints = false
+        progressView.progressTintColor = view.window?.tintColor ?? .systemGreen
+        progressView.trackTintColor = .clear
+        progressView.isHidden = true
+
+        errorView.onRetry = { [weak self] in
+            self?.reloadCurrentPage()
+        }
+        errorView.onOpenInSafari = {
+            UIApplication.shared.open(BrowserPolicy.homeURL)
+        }
+
+        view.addSubview(webView)
+        view.addSubview(progressView)
+        view.addSubview(errorView)
+
+        let safeArea = view.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.topAnchor.constraint(equalTo: safeArea.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
+
+            progressView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            progressView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            progressView.topAnchor.constraint(equalTo: safeArea.topAnchor),
+            progressView.heightAnchor.constraint(equalToConstant: 2),
+
+            errorView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            errorView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            errorView.topAnchor.constraint(equalTo: safeArea.topAnchor),
+            errorView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor)
+        ])
+    }
+
+    private func configureObservers() {
+        observations.append(webView.observe(\.estimatedProgress, options: [.new]) { [weak self] webView, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.progressView.progress = Float(webView.estimatedProgress)
+                self.progressView.isHidden = !webView.isLoading || webView.estimatedProgress >= 1
+            }
+        })
+
+        observations.append(webView.observe(\.isLoading, options: [.new]) { [weak self] webView, _ in
+            DispatchQueue.main.async {
+                self?.progressView.isHidden = !webView.isLoading
+            }
+        })
+    }
+
+    private func configureConnectivity() {
+        connectivityMonitor.onChange = { [weak self] connected in
+            guard let self else { return }
+            let reconnected = connected && !self.isConnected
+            self.isConnected = connected
+
+            if !connected && (self.webView.url == nil || self.lastLoadFailed) {
+                self.errorView.show(
+                    title: "当前没有网络连接",
+                    message: "连接 Wi‑Fi 或蜂窝网络后再试。"
+                )
+            } else if reconnected && self.lastLoadFailed {
+                self.reloadCurrentPage()
+            }
+        }
+        connectivityMonitor.start()
+    }
+
+    private func loadInitialPage() {
+        let storedURL = UserDefaults.standard.string(forKey: Keys.lastURL).flatMap(URL.init(string:))
+        let destination = BrowserPolicy.canPersist(storedURL) ? storedURL! : BrowserPolicy.homeURL
+        load(destination)
+    }
+
+    private func load(_ url: URL) {
+        guard isConnected else {
+            errorView.show(
+                title: "当前没有网络连接",
+                message: "连接 Wi‑Fi 或蜂窝网络后再试。"
+            )
+            return
+        }
+
+        lastLoadFailed = false
+        errorView.hide()
+
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .useProtocolCachePolicy,
+            timeoutInterval: 45
+        )
+        request.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+        webView.load(request)
+    }
+
+    private func reloadCurrentPage() {
+        guard isConnected else {
+            errorView.show(
+                title: "当前没有网络连接",
+                message: "连接 Wi‑Fi 或蜂窝网络后再试。"
+            )
+            return
+        }
+
+        lastLoadFailed = false
+        errorView.hide()
+        if webView.url == nil {
+            loadInitialPage()
+        } else {
+            webView.reload()
+        }
+    }
+
+    private func persistCurrentURL() {
+        guard BrowserPolicy.canPersist(webView.url) else { return }
+        UserDefaults.standard.set(webView.url?.absoluteString, forKey: Keys.lastURL)
+    }
+
+    private func presentExternalURL(_ url: URL) {
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            UIApplication.shared.open(url)
+            return
+        }
+
+        let safari = SFSafariViewController(url: url)
+        safari.dismissButtonStyle = .close
+        safari.preferredControlTintColor = view.tintColor
+        present(safari, animated: true)
+    }
+
+    private func handleLoadFailure(_ error: Error) {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            return
+        }
+
+        lastLoadFailed = true
+        let message: String
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
+            message = "服务器响应超时。你的登录状态仍然保留，可以直接重试。"
+        } else {
+            message = "页面暂时无法载入（\(nsError.localizedDescription)）。"
+        }
+        errorView.show(title: "ChatGPT 没有载入", message: message)
+    }
+
+    private func beginDownload(_ download: WKDownload) {
+        download.delegate = self
+    }
+
+    private static let mobileSafariUserAgent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) " +
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 " +
+        "Mobile/15E148 Safari/604.1"
+
+    private static let compatibilityScript = """
+    (function () {
+      if (document.getElementById('gptweb-ios16-compat')) return;
+      var style = document.createElement('style');
+      style.id = 'gptweb-ios16-compat';
+      style.textContent = [
+        'html { -webkit-text-size-adjust: 100%; }',
+        '@supports (-webkit-touch-callout: none) {',
+        '  textarea, input:not([type="checkbox"]):not([type="radio"]), [contenteditable="true"] {',
+        '    font-size: 16px !important;',
+        '  }',
+        '  button, a, [role="button"] { touch-action: manipulation; }',
+        '}'
+      ].join('\\n');
+      (document.head || document.documentElement).appendChild(style);
+    })();
+    """
+}
+
+extension WebViewController: WKNavigationDelegate {
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        preferences: WKWebpagePreferences,
+        decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
+    ) {
+        preferences.preferredContentMode = .mobile
+
+        guard let url = navigationAction.request.url else {
+            decisionHandler(.cancel, preferences)
+            return
+        }
+
+        if navigationAction.shouldPerformDownload {
+            decisionHandler(.download, preferences)
+            return
+        }
+
+        let scheme = url.scheme?.lowercased() ?? ""
+        if !["http", "https"].contains(scheme) {
+            decisionHandler(.cancel, preferences)
+            UIApplication.shared.open(url)
+            return
+        }
+
+        let isTopLevel = navigationAction.targetFrame?.isMainFrame ?? true
+        if !isTopLevel || BrowserPolicy.shouldOpenInside(url, from: webView.url) {
+            decisionHandler(.allow, preferences)
+        } else {
+            decisionHandler(.cancel, preferences)
+            presentExternalURL(url)
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .download)
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        errorView.hide()
+        lastLoadFailed = false
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        errorView.hide()
+        lastLoadFailed = false
+        recoveryAttempts.removeAll()
+        persistCurrentURL()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        handleLoadFailure(error)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        handleLoadFailure(error)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        let now = Date()
+        recoveryAttempts = recoveryAttempts.filter { now.timeIntervalSince($0) < 60 }
+
+        guard recoveryAttempts.count < 3 else {
+            lastLoadFailed = true
+            errorView.show(
+                title: "网页进程已停止",
+                message: "iOS 多次回收了网页进程。关闭其他占用内存较多的应用后再重试。"
+            )
+            return
+        }
+
+        recoveryAttempts.append(now)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak webView] in
+            guard let self, let webView else { return }
+            if webView.url == nil {
+                self.loadInitialPage()
+            } else {
+                webView.reload()
+            }
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        navigationAction: WKNavigationAction,
+        didBecome download: WKDownload
+    ) {
+        beginDownload(download)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        navigationResponse: WKNavigationResponse,
+        didBecome download: WKDownload
+    ) {
+        beginDownload(download)
+    }
+}
+
+extension WebViewController: WKUIDelegate {
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        guard navigationAction.targetFrame == nil,
+              let url = navigationAction.request.url else {
+            return nil
+        }
+
+        if BrowserPolicy.shouldOpenInside(url, from: webView.url) {
+            webView.load(navigationAction.request)
+        } else {
+            presentExternalURL(url)
+        }
+        return nil
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        decisionHandler(
+            BrowserPolicy.isFirstPartyHost(origin.host.lowercased()) ? .prompt : .deny
+        )
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptAlertPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping () -> Void
+    ) {
+        let alert = UIAlertController(title: webView.title ?? "GPT Web", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default) { _ in completionHandler() })
+        present(alert, animated: true)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptConfirmPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        let alert = UIAlertController(title: webView.title ?? "GPT Web", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(false) })
+        alert.addAction(UIAlertAction(title: "继续", style: .default) { _ in completionHandler(true) })
+        present(alert, animated: true)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptTextInputPanelWithPrompt prompt: String,
+        defaultText: String?,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (String?) -> Void
+    ) {
+        let alert = UIAlertController(title: webView.title ?? "GPT Web", message: prompt, preferredStyle: .alert)
+        alert.addTextField { $0.text = defaultText }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(nil) })
+        alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in
+            completionHandler(alert.textFields?.first?.text)
+        })
+        present(alert, animated: true)
+    }
+}
+
+extension WebViewController: WKDownloadDelegate {
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        let safeFilename = suggestedFilename
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GPTWebDownloads", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let destination = directory.appendingPathComponent(
+                safeFilename.isEmpty ? "download" : safeFilename
+            )
+            downloadDestinations[ObjectIdentifier(download)] = destination
+            completionHandler(destination)
+        } catch {
+            completionHandler(nil)
+            errorView.show(
+                title: "无法准备下载",
+                message: error.localizedDescription,
+                canRetry: false
+            )
+        }
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        guard let destination = downloadDestinations.removeValue(
+            forKey: ObjectIdentifier(download)
+        ) else {
+            return
+        }
+
+        let shareSheet = UIActivityViewController(
+            activityItems: [destination],
+            applicationActivities: nil
+        )
+        shareSheet.popoverPresentationController?.sourceView = view
+        shareSheet.popoverPresentationController?.sourceRect = CGRect(
+            x: view.bounds.midX,
+            y: view.bounds.maxY - 40,
+            width: 1,
+            height: 1
+        )
+        present(shareSheet, animated: true)
+    }
+
+    func download(
+        _ download: WKDownload,
+        didFailWithError error: Error,
+        resumeData: Data?
+    ) {
+        downloadDestinations.removeValue(forKey: ObjectIdentifier(download))
+        errorView.show(
+            title: "下载失败",
+            message: error.localizedDescription,
+            canRetry: false
+        )
+    }
+}

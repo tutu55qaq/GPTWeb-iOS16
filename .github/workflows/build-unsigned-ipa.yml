@@ -1,0 +1,33 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Validate project
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/validate-project.sh
+
+      - name: Build unsigned IPA
+        env:
+          BUNDLE_ID: com.example.gptweb
+        run: ./scripts/build-ipa.sh
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTWeb-unsigned-ipa
+          path: build/GPTWeb-unsigned.ipa
+          if-no-files-found: error
