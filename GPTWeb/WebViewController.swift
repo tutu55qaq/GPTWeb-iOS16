@@ -1375,7 +1375,7 @@ extension WebViewController: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping () -> Void
     ) {
-        let alert = UIAlertController(title: webView.title ?? "GPT Web", message: message, preferredStyle: .alert)
+        let alert = UIAlertController(title: webView.title ?? "ChatGPT", message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "好", style: .default) { _ in completionHandler() })
         present(alert, animated: true)
     }
@@ -1386,7 +1386,7 @@ extension WebViewController: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping (Bool) -> Void
     ) {
-        let alert = UIAlertController(title: webView.title ?? "GPT Web", message: message, preferredStyle: .alert)
+        let alert = UIAlertController(title: webView.title ?? "ChatGPT", message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(false) })
         alert.addAction(UIAlertAction(title: "继续", style: .default) { _ in completionHandler(true) })
         present(alert, animated: true)
@@ -1399,7 +1399,7 @@ extension WebViewController: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping (String?) -> Void
     ) {
-        let alert = UIAlertController(title: webView.title ?? "GPT Web", message: prompt, preferredStyle: .alert)
+        let alert = UIAlertController(title: webView.title ?? "ChatGPT", message: prompt, preferredStyle: .alert)
         alert.addTextField { $0.text = defaultText }
         alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(nil) })
         alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in

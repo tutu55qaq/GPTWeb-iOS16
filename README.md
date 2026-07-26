@@ -1,12 +1,13 @@
-# GPT Web for iOS 16
+# ChatGPT WebView for iOS 16
 
 一个面向个人侧载的轻量级 `WKWebView` 客户端，默认打开
 `https://chatgpt.com/`。工程最低支持 iOS 16.0，并针对 iOS 16.3 与
 iPhone 13 Pro Max（428 pt 宽度、刘海安全区、底部 Home Indicator、120 Hz
 ProMotion）进行了适配。
 
-> 这是非官方项目，与 OpenAI 没有隶属或背书关系。它不包含 OpenAI 商标图标，
-> 不会读取、上传或记录账号、Cookie 和对话内容。
+> 这是用于个人侧载的非官方 WebView 客户端，与 OpenAI 没有隶属或背书关系。
+> 应用显示名与图标取自官方 ChatGPT iOS 客户端，便于替代无法安装的官方客户端；
+> 工程不会读取、上传或记录账号、Cookie 和对话内容。
 
 ## 主要特性
 
