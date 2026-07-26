@@ -580,47 +580,39 @@ final class WebViewController: UIViewController {
         '  z-index: 2147483646;',
         '  top: calc(env(safe-area-inset-top, 0px) + 58px);',
         '  bottom: calc(env(safe-area-inset-bottom, 0px) + 94px);',
-        '  right: 2px;',
-        '  width: 14px;',
-        '  border-radius: 999px;',
+        '  right: 0;',
+        '  width: 22px;',
         '  box-sizing: border-box;',
-        '  background: rgba(80, 84, 88, 0.12);',
-        '  border: 1px solid rgba(127, 127, 127, 0.22);',
-        '  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);',
-        '  -webkit-backdrop-filter: blur(8px);',
-        '  backdrop-filter: blur(8px);',
-        '  opacity: 0;',
-        '  visibility: hidden;',
+        '  background: transparent;',
+        '  border: 0;',
+        '  box-shadow: none;',
         '  pointer-events: none;',
-        '  transition: opacity 160ms ease;',
         '  touch-action: none !important;',
         '  -webkit-user-select: none;',
         '  user-select: none;',
         '}',
-        '#gptweb-scrollbar.gptweb-visible {',
-        '  opacity: 0.92;',
-        '  visibility: visible;',
+        '#gptweb-scrollbar.gptweb-interactive {',
         '  pointer-events: auto;',
         '}',
         '#gptweb-scrollbar-thumb {',
         '  position: absolute;',
         '  top: 0;',
-        '  left: 2px;',
-        '  width: 8px;',
-        '  min-height: 48px;',
+        '  right: 2px;',
+        '  width: 5px;',
+        '  min-height: 42px;',
         '  border-radius: 999px;',
-        '  background: linear-gradient(180deg, #21c59a, #0b8f78);',
-        '  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.24), inset 0 0 0 1px rgba(255, 255, 255, 0.3);',
+        '  background: #0a84ff;',
+        '  box-shadow: none;',
+        '  opacity: 0;',
+        '  transition: opacity 150ms ease, width 120ms ease;',
         '  will-change: transform, height;',
         '}',
-        '@media (prefers-color-scheme: dark) {',
-        '  #gptweb-scrollbar {',
-        '    background: rgba(255, 255, 255, 0.11);',
-        '    border-color: rgba(255, 255, 255, 0.18);',
-        '  }',
-        '  #gptweb-scrollbar-thumb {',
-        '    background: linear-gradient(180deg, #42d8b0, #10a37f);',
-        '  }',
+        '#gptweb-scrollbar.gptweb-visible #gptweb-scrollbar-thumb {',
+        '  opacity: 0.94;',
+        '}',
+        '#gptweb-scrollbar.gptweb-fast #gptweb-scrollbar-thumb {',
+        '  width: 8px;',
+        '  opacity: 1;',
         '}'
       ].join('\\n');
       (document.head || document.documentElement).appendChild(style);
@@ -628,8 +620,11 @@ final class WebViewController: UIViewController {
       var scrollbar = null;
       var thumb = null;
       var activeScroller = null;
-      var drag = null;
+      var barGesture = null;
       var updateScheduled = false;
+      var hideTimer = 0;
+      var inertiaFrame = 0;
+      var pendingContentTouch = null;
 
       function parentElementAcrossShadowDOM(element) {
         if (!element) return null;
@@ -640,6 +635,11 @@ final class WebViewController: UIViewController {
 
       function scrollRange(element) {
         return element ? Math.max(0, element.scrollHeight - element.clientHeight) : 0;
+      }
+
+      function overflowKind(element) {
+        var value = window.getComputedStyle(element).overflowY;
+        return value || 'visible';
       }
 
       function isVisible(element) {
@@ -660,7 +660,7 @@ final class WebViewController: UIViewController {
         var root = document.scrollingElement || document.documentElement;
         if (element === root) return true;
         if (!isVisible(element)) return false;
-        var overflow = window.getComputedStyle(element).overflowY || 'visible';
+        var overflow = overflowKind(element);
         var role = element.getAttribute('role') || '';
         var name = String(element.className || '');
         return overflow === 'auto' ||
@@ -675,15 +675,96 @@ final class WebViewController: UIViewController {
           element.hasAttribute('data-scroll-root');
       }
 
+      function isNativeScroller(element) {
+        var overflow = overflowKind(element);
+        return overflow === 'auto' ||
+          overflow === 'scroll' ||
+          overflow === 'overlay';
+      }
+
+      function brokenScrollerScore(element) {
+        if (!isScroller(element) || isNativeScroller(element)) return -1;
+        var rect = element.getBoundingClientRect();
+        var role = element.getAttribute('role') || '';
+        var name = String(element.className || '');
+        var viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+        var score = Math.min(100, rect.width * rect.height / viewportArea * 100);
+        score += Math.min(45, scrollRange(element) / 160);
+        if (element.tagName === 'MAIN' || role === 'main') score += 80;
+        if (role === 'dialog') score += 45;
+        if (element.hasAttribute('data-scroll-root')) score += 70;
+        if (name.indexOf('overflow') !== -1) score += 35;
+        return score;
+      }
+
       function nearestScroller(start) {
         var element = start && start.nodeType === 1 ? start : start && start.parentElement;
+        var brokenCandidate = null;
+        var brokenScore = -1;
         var depth = 0;
         while (element && depth < 40) {
-          if (isScroller(element)) return element;
+          if (isScroller(element)) {
+            if (isNativeScroller(element)) return element;
+            var score = brokenScrollerScore(element);
+            if (score > brokenScore) {
+              brokenCandidate = element;
+              brokenScore = score;
+            }
+          }
           element = parentElementAcrossShadowDOM(element);
           depth += 1;
         }
-        return null;
+        return brokenCandidate;
+      }
+
+      function pointInside(rect, x, y) {
+        return x >= rect.left && x <= rect.right &&
+          y >= rect.top && y <= rect.bottom;
+      }
+
+      function fallbackScroller(start, x, y) {
+        var selector = [
+          '[data-scroll-root]',
+          '[data-testid*="conversation"]',
+          '[data-testid*="thread"]',
+          '[data-testid*="message"]',
+          '[class*="overflow-y-auto"]',
+          '[class*="overflow-auto"]',
+          '[role="main"]',
+          '[role="dialog"]',
+          'main'
+        ].join(',');
+        var nodes = document.querySelectorAll(selector);
+        var best = null;
+        var bestScore = -1;
+        var count = Math.min(nodes.length, 400);
+
+        for (var index = 0; index < count; index += 1) {
+          var node = nodes[index];
+          if (!isScroller(node)) continue;
+          var rect = node.getBoundingClientRect();
+          var containsStart = start && node.contains(start);
+          var containsPoint = pointInside(rect, x, y);
+          if (!containsStart && !containsPoint) continue;
+
+          var score = 0;
+          if (containsStart) score += 140;
+          if (containsPoint) score += 80;
+          if (isNativeScroller(node)) score += 90;
+          score += Math.max(0, brokenScrollerScore(node));
+          if (score > bestScore) {
+            best = node;
+            bestScore = score;
+          }
+        }
+        return best;
+      }
+
+      function findScroller(start, x, y) {
+        var nested = nearestScroller(start) || fallbackScroller(start, x, y);
+        if (nested) return nested;
+        var root = document.scrollingElement || document.documentElement;
+        return root && scrollRange(root) >= 12 ? root : null;
       }
 
       function defaultScroller() {
@@ -691,6 +772,7 @@ final class WebViewController: UIViewController {
           '[data-scroll-root]',
           '[data-testid*="conversation"]',
           '[data-testid*="thread"]',
+          '[data-testid*="message"]',
           '[class*="overflow-y-auto"]',
           '[class*="overflow-auto"]',
           '[role="main"]',
@@ -736,25 +818,26 @@ final class WebViewController: UIViewController {
         scrollbar.appendChild(thumb);
         document.body.appendChild(scrollbar);
 
-        scrollbar.addEventListener('touchstart', beginDrag, {
+        scrollbar.addEventListener('touchstart', beginBarGesture, {
           passive: false
         });
-        scrollbar.addEventListener('touchmove', continueDrag, {
+        scrollbar.addEventListener('touchmove', continueBarGesture, {
           passive: false
         });
-        scrollbar.addEventListener('touchend', endDrag, {
+        scrollbar.addEventListener('touchend', endBarGesture, {
           passive: false
         });
-        scrollbar.addEventListener('touchcancel', endDrag, {
+        scrollbar.addEventListener('touchcancel', cancelBarGesture, {
           passive: false
         });
         return true;
       }
 
-      function setActiveScroller(element) {
+      function setActiveScroller(element, shouldReveal) {
         if (!isScroller(element)) return false;
         activeScroller = element;
         scheduleUpdate();
+        if (shouldReveal) revealScrollbar();
         return true;
       }
 
@@ -774,7 +857,7 @@ final class WebViewController: UIViewController {
         var maximum = scrollRange(scroller);
         if (height <= 0 || maximum <= 0) return null;
         var thumbHeight = Math.max(
-          48,
+          42,
           Math.min(height, height * scroller.clientHeight / scroller.scrollHeight)
         );
         var travel = Math.max(1, height - thumbHeight);
@@ -798,11 +881,11 @@ final class WebViewController: UIViewController {
         var metrics = scroller ? thumbMetrics(scroller) : null;
         if (!metrics) {
           scrollbar.classList.remove('gptweb-visible');
+          scrollbar.classList.remove('gptweb-interactive');
           return;
         }
         thumb.style.height = metrics.thumbHeight + 'px';
         thumb.style.transform = 'translate3d(0,' + metrics.top + 'px,0)';
-        scrollbar.classList.add('gptweb-visible');
       }
 
       function scheduleUpdate() {
@@ -811,67 +894,212 @@ final class WebViewController: UIViewController {
         window.requestAnimationFrame(updateScrollbar);
       }
 
-      function beginDrag(event) {
+      function hideScrollbarSoon() {
+        if (!scrollbar) return;
+        if (hideTimer) window.clearTimeout(hideTimer);
+        hideTimer = window.setTimeout(function () {
+          hideTimer = 0;
+          if (barGesture) return;
+          scrollbar.classList.remove('gptweb-visible');
+          scrollbar.classList.remove('gptweb-interactive');
+          scrollbar.classList.remove('gptweb-fast');
+        }, 1400);
+      }
+
+      function revealScrollbar() {
+        if (!ensureScrollbar()) return;
+        scrollbar.classList.add('gptweb-visible');
+        scrollbar.classList.add('gptweb-interactive');
+        scheduleUpdate();
+        hideScrollbarSoon();
+      }
+
+      function cancelInertia() {
+        if (!inertiaFrame) return;
+        window.cancelAnimationFrame(inertiaFrame);
+        inertiaFrame = 0;
+      }
+
+      function beginBarGesture(event) {
         if (event.touches.length !== 1) return;
         var scroller = ensureActiveScroller();
         var metrics = scroller ? thumbMetrics(scroller) : null;
         if (!metrics) return;
 
         var touch = event.touches[0];
-        var rect = scrollbar.getBoundingClientRect();
-        if (event.target !== thumb) {
-          var desiredTop = touch.clientY - rect.top - metrics.thumbHeight / 2;
-          var ratio = Math.max(0, Math.min(1, desiredTop / metrics.travel));
-          scroller.scrollTop = ratio * metrics.maximum;
-          metrics = thumbMetrics(scroller);
+        cancelInertia();
+        if (hideTimer) {
+          window.clearTimeout(hideTimer);
+          hideTimer = 0;
         }
-
-        drag = {
+        barGesture = {
           startY: touch.clientY,
+          lastY: touch.clientY,
+          lastTime: Date.now(),
           startTop: scroller.scrollTop,
           maximum: metrics.maximum,
           travel: metrics.travel,
-          scroller: scroller
+          scroller: scroller,
+          fast: false,
+          moved: false,
+          velocity: 0,
+          longPressTimer: 0
         };
+        barGesture.longPressTimer = window.setTimeout(function () {
+          if (!barGesture || barGesture.moved) return;
+          barGesture.fast = true;
+          scrollbar.classList.add('gptweb-fast');
+          revealScrollbar();
+        }, 360);
         event.preventDefault();
         event.stopPropagation();
-        scheduleUpdate();
+        revealScrollbar();
       }
 
-      function continueDrag(event) {
-        if (!drag || event.touches.length !== 1) return;
+      function continueBarGesture(event) {
+        if (!barGesture || event.touches.length !== 1) return;
         var touch = event.touches[0];
-        var delta = touch.clientY - drag.startY;
-        var next = drag.startTop + delta / drag.travel * drag.maximum;
-        drag.scroller.scrollTop = Math.max(0, Math.min(drag.maximum, next));
+        var now = Date.now();
+        var totalDelta = touch.clientY - barGesture.startY;
+        var stepDelta = barGesture.lastY - touch.clientY;
+        var elapsed = Math.max(1, now - barGesture.lastTime);
+
+        if (!barGesture.fast && Math.abs(totalDelta) > 7) {
+          barGesture.moved = true;
+          if (barGesture.longPressTimer) {
+            window.clearTimeout(barGesture.longPressTimer);
+            barGesture.longPressTimer = 0;
+          }
+        }
+
+        var next;
+        if (barGesture.fast) {
+          next = barGesture.startTop +
+            totalDelta / barGesture.travel * barGesture.maximum;
+        } else {
+          next = barGesture.scroller.scrollTop + stepDelta;
+          var instantaneousVelocity = stepDelta / elapsed;
+          barGesture.velocity =
+            barGesture.velocity * 0.72 + instantaneousVelocity * 0.28;
+        }
+        barGesture.scroller.scrollTop = Math.max(
+          0,
+          Math.min(barGesture.maximum, next)
+        );
+        barGesture.lastY = touch.clientY;
+        barGesture.lastTime = now;
         event.preventDefault();
         event.stopPropagation();
         scheduleUpdate();
       }
 
-      function endDrag(event) {
-        if (!drag) return;
-        drag = null;
+      function startInertia(scroller, velocity) {
+        if (!scroller || Math.abs(velocity) < 0.08) return;
+        var previous = Date.now();
+        function step() {
+          var now = Date.now();
+          var elapsed = Math.min(32, Math.max(1, now - previous));
+          previous = now;
+          var maximum = scrollRange(scroller);
+          var current = scroller.scrollTop;
+          var next = Math.max(0, Math.min(maximum, current + velocity * elapsed));
+          scroller.scrollTop = next;
+          velocity *= Math.pow(0.94, elapsed / 16);
+          scheduleUpdate();
+          revealScrollbar();
+          if (Math.abs(velocity) >= 0.025 &&
+              next > 0 && next < maximum) {
+            inertiaFrame = window.requestAnimationFrame(step);
+          } else {
+            inertiaFrame = 0;
+            hideScrollbarSoon();
+          }
+        }
+        inertiaFrame = window.requestAnimationFrame(step);
+      }
+
+      function finishBarGesture(event, cancelled) {
+        if (!barGesture) return;
+        var finished = barGesture;
+        if (finished.longPressTimer) {
+          window.clearTimeout(finished.longPressTimer);
+        }
+        barGesture = null;
+        scrollbar.classList.remove('gptweb-fast');
+        if (!cancelled && !finished.fast) {
+          startInertia(finished.scroller, finished.velocity);
+        }
         if (event.cancelable) event.preventDefault();
         event.stopPropagation();
         scheduleUpdate();
+        hideScrollbarSoon();
+      }
+
+      function endBarGesture(event) {
+        finishBarGesture(event, false);
+      }
+
+      function cancelBarGesture(event) {
+        finishBarGesture(event, true);
       }
 
       document.addEventListener('touchstart', function (event) {
         if (scrollbar && scrollbar.contains(event.target)) return;
-        var scroller = nearestScroller(event.target);
-        if (scroller) setActiveScroller(scroller);
+        if (event.touches.length !== 1) return;
+        var touch = event.touches[0];
+        var scroller = findScroller(
+          event.target,
+          touch.clientX,
+          touch.clientY
+        );
+        if (!scroller) {
+          pendingContentTouch = null;
+          return;
+        }
+        setActiveScroller(scroller, false);
+        pendingContentTouch = {
+          startX: touch.clientX,
+          startY: touch.clientY
+        };
       }, {
         capture: true,
         passive: true
       });
 
+      document.addEventListener('touchmove', function (event) {
+        if (!pendingContentTouch || event.touches.length !== 1) return;
+        var touch = event.touches[0];
+        var deltaX = touch.clientX - pendingContentTouch.startX;
+        var deltaY = touch.clientY - pendingContentTouch.startY;
+        if (Math.abs(deltaY) < 5 ||
+            Math.abs(deltaY) <= Math.abs(deltaX)) return;
+        pendingContentTouch = null;
+        revealScrollbar();
+      }, {
+        capture: true,
+        passive: true
+      });
+
+      function clearPendingContentTouch() {
+        pendingContentTouch = null;
+      }
+
+      document.addEventListener('touchend', clearPendingContentTouch, {
+        capture: true,
+        passive: true
+      });
+      document.addEventListener('touchcancel', clearPendingContentTouch, {
+        capture: true,
+        passive: true
+      });
+
       document.addEventListener('scroll', function (event) {
-        if (event.target === activeScroller ||
-            event.target === document ||
-            event.target === document.documentElement) {
-          scheduleUpdate();
+        var target = event.target;
+        if (target === document || target === document.documentElement) {
+          target = document.scrollingElement || document.documentElement;
         }
+        if (isScroller(target)) activeScroller = target;
+        revealScrollbar();
       }, {
         capture: true,
         passive: true
@@ -892,6 +1120,7 @@ final class WebViewController: UIViewController {
         passive: true
       });
       window.setInterval(scheduleUpdate, 1200);
+      ensureScrollbar();
       scheduleUpdate();
     })();
     """
