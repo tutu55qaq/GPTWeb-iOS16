@@ -70,7 +70,7 @@ final class WebViewController: UIViewController {
 
         let contentController = WKUserContentController()
         contentController.addUserScript(WKUserScript(
-            source: Self.compatibilityScript,
+            source: Self.scrollbarScript,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: false
         ))
@@ -89,9 +89,6 @@ final class WebViewController: UIViewController {
         webView.scrollView.keyboardDismissMode = .interactive
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = true
-        webView.scrollView.bounces = false
-        webView.scrollView.alwaysBounceVertical = false
-        webView.scrollView.isDirectionalLockEnabled = true
         return webView
     }
 
@@ -234,6 +231,13 @@ final class WebViewController: UIViewController {
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
             return
         }
+        if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 {
+            // WebKit reports this when a navigation is intentionally converted
+            // into a WKDownload. The page itself is still healthy.
+            lastLoadFailed = false
+            errorView.hide()
+            return
+        }
 
         lastLoadFailed = true
         let message: String
@@ -246,7 +250,19 @@ final class WebViewController: UIViewController {
     }
 
     private func beginDownload(_ download: WKDownload) {
+        lastLoadFailed = false
+        errorView.hide()
         download.delegate = self
+    }
+
+    private func presentDownloadError(_ error: Error) {
+        let alert = UIAlertController(
+            title: "下载失败",
+            message: error.localizedDescription,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
     }
 
     private static let mobileSafariUserAgent =
@@ -538,6 +554,347 @@ final class WebViewController: UIViewController {
       });
     })();
     """
+
+    private static let scrollbarScript = """
+    (function () {
+      var hostname = String(window.location.hostname || '').toLowerCase();
+      var isChatGPTDocument = hostname === 'chatgpt.com' ||
+        hostname.slice(-12) === '.chatgpt.com' ||
+        hostname === 'chat.openai.com';
+      if (!isChatGPTDocument) return;
+      if (window.__gptwebIOS16ScrollbarInstalled) return;
+      window.__gptwebIOS16ScrollbarInstalled = true;
+
+      var style = document.createElement('style');
+      style.id = 'gptweb-ios16-scrollbar-style';
+      style.textContent = [
+        'html { -webkit-text-size-adjust: 100%; }',
+        '@supports (-webkit-touch-callout: none) {',
+        '  textarea, input:not([type="checkbox"]):not([type="radio"]), [contenteditable="true"] {',
+        '    font-size: 16px !important;',
+        '  }',
+        '  button, a, [role="button"] { touch-action: manipulation; }',
+        '}',
+        '#gptweb-scrollbar {',
+        '  position: fixed;',
+        '  z-index: 2147483646;',
+        '  top: calc(env(safe-area-inset-top, 0px) + 58px);',
+        '  bottom: calc(env(safe-area-inset-bottom, 0px) + 94px);',
+        '  right: 2px;',
+        '  width: 14px;',
+        '  border-radius: 999px;',
+        '  box-sizing: border-box;',
+        '  background: rgba(80, 84, 88, 0.12);',
+        '  border: 1px solid rgba(127, 127, 127, 0.22);',
+        '  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);',
+        '  -webkit-backdrop-filter: blur(8px);',
+        '  backdrop-filter: blur(8px);',
+        '  opacity: 0;',
+        '  visibility: hidden;',
+        '  pointer-events: none;',
+        '  transition: opacity 160ms ease;',
+        '  touch-action: none !important;',
+        '  -webkit-user-select: none;',
+        '  user-select: none;',
+        '}',
+        '#gptweb-scrollbar.gptweb-visible {',
+        '  opacity: 0.92;',
+        '  visibility: visible;',
+        '  pointer-events: auto;',
+        '}',
+        '#gptweb-scrollbar-thumb {',
+        '  position: absolute;',
+        '  top: 0;',
+        '  left: 2px;',
+        '  width: 8px;',
+        '  min-height: 48px;',
+        '  border-radius: 999px;',
+        '  background: linear-gradient(180deg, #21c59a, #0b8f78);',
+        '  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.24), inset 0 0 0 1px rgba(255, 255, 255, 0.3);',
+        '  will-change: transform, height;',
+        '}',
+        '@media (prefers-color-scheme: dark) {',
+        '  #gptweb-scrollbar {',
+        '    background: rgba(255, 255, 255, 0.11);',
+        '    border-color: rgba(255, 255, 255, 0.18);',
+        '  }',
+        '  #gptweb-scrollbar-thumb {',
+        '    background: linear-gradient(180deg, #42d8b0, #10a37f);',
+        '  }',
+        '}'
+      ].join('\\n');
+      (document.head || document.documentElement).appendChild(style);
+
+      var scrollbar = null;
+      var thumb = null;
+      var activeScroller = null;
+      var drag = null;
+      var updateScheduled = false;
+
+      function parentElementAcrossShadowDOM(element) {
+        if (!element) return null;
+        if (element.parentElement) return element.parentElement;
+        var root = element.getRootNode ? element.getRootNode() : null;
+        return root && root.host ? root.host : null;
+      }
+
+      function scrollRange(element) {
+        return element ? Math.max(0, element.scrollHeight - element.clientHeight) : 0;
+      }
+
+      function isVisible(element) {
+        if (!element || element.nodeType !== 1 || !element.isConnected) return false;
+        var rect = element.getBoundingClientRect();
+        var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+        var viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+        return rect.height >= 96 &&
+          rect.width >= 120 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.top < viewportHeight &&
+          rect.left < viewportWidth;
+      }
+
+      function isScroller(element) {
+        if (!element || scrollRange(element) < 12) return false;
+        var root = document.scrollingElement || document.documentElement;
+        if (element === root) return true;
+        if (!isVisible(element)) return false;
+        var overflow = window.getComputedStyle(element).overflowY || 'visible';
+        var role = element.getAttribute('role') || '';
+        var name = String(element.className || '');
+        return overflow === 'auto' ||
+          overflow === 'scroll' ||
+          overflow === 'overlay' ||
+          overflow === 'hidden' ||
+          overflow === 'clip' ||
+          element.tagName === 'MAIN' ||
+          role === 'main' ||
+          role === 'dialog' ||
+          name.indexOf('overflow') !== -1 ||
+          element.hasAttribute('data-scroll-root');
+      }
+
+      function nearestScroller(start) {
+        var element = start && start.nodeType === 1 ? start : start && start.parentElement;
+        var depth = 0;
+        while (element && depth < 40) {
+          if (isScroller(element)) return element;
+          element = parentElementAcrossShadowDOM(element);
+          depth += 1;
+        }
+        return null;
+      }
+
+      function defaultScroller() {
+        var selector = [
+          '[data-scroll-root]',
+          '[data-testid*="conversation"]',
+          '[data-testid*="thread"]',
+          '[class*="overflow-y-auto"]',
+          '[class*="overflow-auto"]',
+          '[role="main"]',
+          '[role="dialog"]',
+          'main'
+        ].join(',');
+        var nodes = document.querySelectorAll(selector);
+        var best = null;
+        var bestScore = -1;
+        var viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+        var count = Math.min(nodes.length, 300);
+
+        for (var index = 0; index < count; index += 1) {
+          var node = nodes[index];
+          if (!isScroller(node)) continue;
+          var rect = node.getBoundingClientRect();
+          var role = node.getAttribute('role') || '';
+          var score = Math.min(140, (rect.width * rect.height / viewportArea) * 140);
+          score += Math.min(45, scrollRange(node) / 180);
+          if (node.tagName === 'MAIN' || role === 'main') score += 70;
+          if (role === 'dialog') score += 35;
+          if (rect.width > window.innerWidth * 0.55) score += 25;
+          if (score > bestScore) {
+            best = node;
+            bestScore = score;
+          }
+        }
+
+        var root = document.scrollingElement || document.documentElement;
+        if (!best && isScroller(root)) best = root;
+        return best;
+      }
+
+      function ensureScrollbar() {
+        if (scrollbar && scrollbar.isConnected) return true;
+        if (!document.body) return false;
+
+        scrollbar = document.createElement('div');
+        scrollbar.id = 'gptweb-scrollbar';
+        scrollbar.setAttribute('aria-hidden', 'true');
+        thumb = document.createElement('div');
+        thumb.id = 'gptweb-scrollbar-thumb';
+        scrollbar.appendChild(thumb);
+        document.body.appendChild(scrollbar);
+
+        scrollbar.addEventListener('touchstart', beginDrag, {
+          passive: false
+        });
+        scrollbar.addEventListener('touchmove', continueDrag, {
+          passive: false
+        });
+        scrollbar.addEventListener('touchend', endDrag, {
+          passive: false
+        });
+        scrollbar.addEventListener('touchcancel', endDrag, {
+          passive: false
+        });
+        return true;
+      }
+
+      function setActiveScroller(element) {
+        if (!isScroller(element)) return false;
+        activeScroller = element;
+        scheduleUpdate();
+        return true;
+      }
+
+      function ensureActiveScroller() {
+        if (isScroller(activeScroller)) return activeScroller;
+        activeScroller = defaultScroller();
+        return activeScroller;
+      }
+
+      function barHeight() {
+        if (!scrollbar) return 0;
+        return scrollbar.clientHeight || scrollbar.getBoundingClientRect().height || 0;
+      }
+
+      function thumbMetrics(scroller) {
+        var height = barHeight();
+        var maximum = scrollRange(scroller);
+        if (height <= 0 || maximum <= 0) return null;
+        var thumbHeight = Math.max(
+          48,
+          Math.min(height, height * scroller.clientHeight / scroller.scrollHeight)
+        );
+        var travel = Math.max(1, height - thumbHeight);
+        var top = Math.max(0, Math.min(
+          travel,
+          scroller.scrollTop / maximum * travel
+        ));
+        return {
+          height: height,
+          maximum: maximum,
+          thumbHeight: thumbHeight,
+          travel: travel,
+          top: top
+        };
+      }
+
+      function updateScrollbar() {
+        updateScheduled = false;
+        if (!ensureScrollbar()) return;
+        var scroller = ensureActiveScroller();
+        var metrics = scroller ? thumbMetrics(scroller) : null;
+        if (!metrics) {
+          scrollbar.classList.remove('gptweb-visible');
+          return;
+        }
+        thumb.style.height = metrics.thumbHeight + 'px';
+        thumb.style.transform = 'translate3d(0,' + metrics.top + 'px,0)';
+        scrollbar.classList.add('gptweb-visible');
+      }
+
+      function scheduleUpdate() {
+        if (updateScheduled) return;
+        updateScheduled = true;
+        window.requestAnimationFrame(updateScrollbar);
+      }
+
+      function beginDrag(event) {
+        if (event.touches.length !== 1) return;
+        var scroller = ensureActiveScroller();
+        var metrics = scroller ? thumbMetrics(scroller) : null;
+        if (!metrics) return;
+
+        var touch = event.touches[0];
+        var rect = scrollbar.getBoundingClientRect();
+        if (event.target !== thumb) {
+          var desiredTop = touch.clientY - rect.top - metrics.thumbHeight / 2;
+          var ratio = Math.max(0, Math.min(1, desiredTop / metrics.travel));
+          scroller.scrollTop = ratio * metrics.maximum;
+          metrics = thumbMetrics(scroller);
+        }
+
+        drag = {
+          startY: touch.clientY,
+          startTop: scroller.scrollTop,
+          maximum: metrics.maximum,
+          travel: metrics.travel,
+          scroller: scroller
+        };
+        event.preventDefault();
+        event.stopPropagation();
+        scheduleUpdate();
+      }
+
+      function continueDrag(event) {
+        if (!drag || event.touches.length !== 1) return;
+        var touch = event.touches[0];
+        var delta = touch.clientY - drag.startY;
+        var next = drag.startTop + delta / drag.travel * drag.maximum;
+        drag.scroller.scrollTop = Math.max(0, Math.min(drag.maximum, next));
+        event.preventDefault();
+        event.stopPropagation();
+        scheduleUpdate();
+      }
+
+      function endDrag(event) {
+        if (!drag) return;
+        drag = null;
+        if (event.cancelable) event.preventDefault();
+        event.stopPropagation();
+        scheduleUpdate();
+      }
+
+      document.addEventListener('touchstart', function (event) {
+        if (scrollbar && scrollbar.contains(event.target)) return;
+        var scroller = nearestScroller(event.target);
+        if (scroller) setActiveScroller(scroller);
+      }, {
+        capture: true,
+        passive: true
+      });
+
+      document.addEventListener('scroll', function (event) {
+        if (event.target === activeScroller ||
+            event.target === document ||
+            event.target === document.documentElement) {
+          scheduleUpdate();
+        }
+      }, {
+        capture: true,
+        passive: true
+      });
+
+      var observer = new MutationObserver(function () {
+        if (!activeScroller || !activeScroller.isConnected || scrollRange(activeScroller) < 12) {
+          activeScroller = null;
+        }
+        scheduleUpdate();
+      });
+      observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true
+      });
+
+      window.addEventListener('resize', scheduleUpdate, {
+        passive: true
+      });
+      window.setInterval(scheduleUpdate, 1200);
+      scheduleUpdate();
+    })();
+    """
 }
 
 extension WebViewController: WKNavigationDelegate {
@@ -560,6 +917,14 @@ extension WebViewController: WKNavigationDelegate {
         }
 
         let scheme = url.scheme?.lowercased() ?? ""
+        if ["blob", "data", "filesystem"].contains(scheme) {
+            decisionHandler(.download, preferences)
+            return
+        }
+        if scheme == "about" {
+            decisionHandler(.allow, preferences)
+            return
+        }
         if !["http", "https"].contains(scheme) {
             decisionHandler(.cancel, preferences)
             UIApplication.shared.open(url)
@@ -580,7 +945,13 @@ extension WebViewController: WKNavigationDelegate {
         decidePolicyFor navigationResponse: WKNavigationResponse,
         decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
     ) {
-        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .download)
+        let contentDisposition = (navigationResponse.response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Disposition")?
+            .lowercased() ?? ""
+        let isAttachment = contentDisposition.contains("attachment")
+        decisionHandler(
+            isAttachment || !navigationResponse.canShowMIMEType ? .download : .allow
+        )
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -660,7 +1031,9 @@ extension WebViewController: WKUIDelegate {
             return nil
         }
 
-        if BrowserPolicy.shouldOpenInside(url, from: webView.url) {
+        let scheme = url.scheme?.lowercased() ?? ""
+        if ["blob", "data", "filesystem"].contains(scheme) ||
+            BrowserPolicy.shouldOpenInside(url, from: webView.url) {
             webView.load(navigationAction.request)
         } else {
             presentExternalURL(url)
@@ -782,10 +1155,6 @@ extension WebViewController: WKDownloadDelegate {
         resumeData: Data?
     ) {
         downloadDestinations.removeValue(forKey: ObjectIdentifier(download))
-        errorView.show(
-            title: "下载失败",
-            message: error.localizedDescription,
-            canRetry: false
-        )
+        presentDownloadError(error)
     }
 }

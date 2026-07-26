@@ -64,6 +64,16 @@ info = plistlib.loads((root / "GPTWeb/Info.plist").read_bytes())
 if info.get("NSAppTransportSecurity", {}).get("NSAllowsArbitraryLoads") is not False:
     raise SystemExit("必须保持 NSAllowsArbitraryLoads=false")
 
+swift = (root / "GPTWeb/WebViewController.swift").read_text(encoding="utf-8")
+for marker in (
+    'source: Self.scrollbarScript',
+    'nsError.domain == "WebKitErrorDomain" && nsError.code == 102',
+    'value(forHTTPHeaderField: "Content-Disposition")',
+    'isAttachment || !navigationResponse.canShowMIMEType ? .download : .allow',
+):
+    if marker not in swift:
+        raise SystemExit(f"WebViewController.swift 缺少回归标记：{marker}")
+
 print("Plist、Asset Catalog 和工程引用检查通过。")
 PY
 
