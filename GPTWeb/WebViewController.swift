@@ -91,7 +91,7 @@ final class WebViewController: UIViewController {
         webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = true
         webView.scrollView.bounces = false
         webView.scrollView.alwaysBounceVertical = false
-        webView.scrollView.directionalLockEnabled = true
+        webView.scrollView.isDirectionalLockEnabled = true
         return webView
     }
 
