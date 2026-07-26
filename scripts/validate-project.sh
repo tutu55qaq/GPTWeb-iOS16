@@ -24,6 +24,10 @@ done
 
 bash -n "$PROJECT_DIR/scripts/build-ipa.sh"
 
+if command -v node >/dev/null 2>&1; then
+  node "$PROJECT_DIR/scripts/test-scroll-fix.js"
+fi
+
 python3 - "$PROJECT_DIR" <<'PY'
 import json
 import pathlib

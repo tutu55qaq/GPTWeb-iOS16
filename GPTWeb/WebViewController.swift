@@ -72,7 +72,7 @@ final class WebViewController: UIViewController {
         contentController.addUserScript(WKUserScript(
             source: Self.compatibilityScript,
             injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
+            forMainFrameOnly: false
         ))
         configuration.userContentController = contentController
 
@@ -89,6 +89,9 @@ final class WebViewController: UIViewController {
         webView.scrollView.keyboardDismissMode = .interactive
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = true
+        webView.scrollView.bounces = false
+        webView.scrollView.alwaysBounceVertical = false
+        webView.scrollView.directionalLockEnabled = true
         return webView
     }
 
@@ -253,19 +256,286 @@ final class WebViewController: UIViewController {
 
     private static let compatibilityScript = """
     (function () {
-      if (document.getElementById('gptweb-ios16-compat')) return;
+      var hostname = String(window.location.hostname || '').toLowerCase();
+      var isChatGPTDocument = hostname === 'chatgpt.com' ||
+        hostname.slice(-12) === '.chatgpt.com' ||
+        hostname === 'chat.openai.com';
+      if (!isChatGPTDocument) return;
+      if (window.__gptwebIOS16CompatibilityInstalled) return;
+      window.__gptwebIOS16CompatibilityInstalled = true;
+
       var style = document.createElement('style');
       style.id = 'gptweb-ios16-compat';
       style.textContent = [
-        'html { -webkit-text-size-adjust: 100%; }',
+        'html { -webkit-text-size-adjust: 100%; overscroll-behavior-y: none; }',
+        'body { overscroll-behavior-y: none; }',
         '@supports (-webkit-touch-callout: none) {',
         '  textarea, input:not([type="checkbox"]):not([type="radio"]), [contenteditable="true"] {',
         '    font-size: 16px !important;',
         '  }',
         '  button, a, [role="button"] { touch-action: manipulation; }',
+        '  [data-gptweb-scroll-fix="true"] {',
+        '    overflow-y: auto !important;',
+        '    -webkit-overflow-scrolling: auto !important;',
+        '    overscroll-behavior-y: contain !important;',
+        '    touch-action: pan-y !important;',
+        '    min-height: 0 !important;',
+        '  }',
         '}'
       ].join('\\n');
       (document.head || document.documentElement).appendChild(style);
+
+      var gesture = null;
+      var fixedScrollers = [];
+
+      function parentElementAcrossShadowDOM(element) {
+        if (!element) return null;
+        if (element.parentElement) return element.parentElement;
+        var root = element.getRootNode ? element.getRootNode() : null;
+        return root && root.host ? root.host : null;
+      }
+
+      function isVisible(element) {
+        if (!element || element.nodeType !== 1) return false;
+        var rect = element.getBoundingClientRect();
+        var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+        var viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+        return rect.height >= 96 &&
+          rect.width >= 120 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.top < viewportHeight &&
+          rect.left < viewportWidth;
+      }
+
+      function scrollRange(element) {
+        return Math.max(0, element.scrollHeight - element.clientHeight);
+      }
+
+      function overflowKind(element) {
+        var value = window.getComputedStyle(element).overflowY;
+        return value || 'visible';
+      }
+
+      function isNativeScroller(element) {
+        var overflow = overflowKind(element);
+        return overflow === 'auto' || overflow === 'scroll' || overflow === 'overlay';
+      }
+
+      function isBrokenScrollerCandidate(element) {
+        if (!isVisible(element) || scrollRange(element) < 12) return false;
+        var overflow = overflowKind(element);
+        if (overflow === 'hidden' || overflow === 'clip') return true;
+        var role = element.getAttribute('role') || '';
+        var name = String(element.className || '');
+        return element.tagName === 'MAIN' ||
+          role === 'main' ||
+          role === 'dialog' ||
+          name.indexOf('overflow') !== -1 ||
+          element.hasAttribute('data-scroll-root');
+      }
+
+      function rememberScroller(element) {
+        if (fixedScrollers.indexOf(element) === -1) fixedScrollers.push(element);
+        if (fixedScrollers.length > 12) fixedScrollers.shift();
+      }
+
+      function repairScroller(element) {
+        if (!element || !element.isConnected) return;
+        element.setAttribute('data-gptweb-scroll-fix', 'true');
+        element.style.setProperty('overflow-y', 'auto', 'important');
+        element.style.setProperty('-webkit-overflow-scrolling', 'auto', 'important');
+        element.style.setProperty('overscroll-behavior-y', 'contain', 'important');
+        element.style.setProperty('touch-action', 'pan-y', 'important');
+        void element.offsetHeight;
+        rememberScroller(element);
+      }
+
+      function nearestScroller(start) {
+        var element = start && start.nodeType === 1 ? start : start && start.parentElement;
+        var brokenCandidate = null;
+        var depth = 0;
+
+        while (element && element !== document.documentElement && depth < 40) {
+          if (isVisible(element) && scrollRange(element) >= 12) {
+            if (isNativeScroller(element)) return element;
+            if (!brokenCandidate && isBrokenScrollerCandidate(element)) {
+              brokenCandidate = element;
+            }
+          }
+          element = parentElementAcrossShadowDOM(element);
+          depth += 1;
+        }
+        return brokenCandidate;
+      }
+
+      function pointInside(rect, x, y) {
+        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      }
+
+      function fallbackScroller(start, x, y) {
+        var selector = [
+          '[data-scroll-root]',
+          '[data-testid*="conversation"]',
+          '[data-testid*="thread"]',
+          '[data-testid*="message"]',
+          '[class*="overflow-y-auto"]',
+          '[class*="overflow-auto"]',
+          '[role="main"]',
+          '[role="dialog"]',
+          'main'
+        ].join(',');
+        var nodes = document.querySelectorAll(selector);
+        var best = null;
+        var bestScore = -1;
+        var count = Math.min(nodes.length, 300);
+
+        for (var index = 0; index < count; index += 1) {
+          var node = nodes[index];
+          if (!isVisible(node) || scrollRange(node) < 12) continue;
+          var rect = node.getBoundingClientRect();
+          var containsStart = start && node.contains(start);
+          var containsPoint = pointInside(rect, x, y);
+          if (!containsStart && !containsPoint) continue;
+
+          var score = 0;
+          if (containsStart) score += 120;
+          if (containsPoint) score += 80;
+          if (isNativeScroller(node)) score += 40;
+          if (overflowKind(node) === 'hidden' || overflowKind(node) === 'clip') score += 25;
+          score += Math.min(35, scrollRange(node) / 120);
+          score += Math.min(20, rect.height / 80);
+          if (score > bestScore) {
+            best = node;
+            bestScore = score;
+          }
+        }
+        return best;
+      }
+
+      function findScroller(start, x, y) {
+        var nested = nearestScroller(start) || fallbackScroller(start, x, y);
+        if (nested) return nested;
+        var root = document.scrollingElement || document.documentElement;
+        return root && scrollRange(root) >= 12 ? root : null;
+      }
+
+      function isEditableTarget(target) {
+        if (!target || !target.closest) return false;
+        return Boolean(target.closest(
+          'textarea,input,select,[contenteditable="true"],[role="textbox"],canvas'
+        ));
+      }
+
+      function beginGesture(event) {
+        if (event.touches.length !== 1 || isEditableTarget(event.target)) {
+          gesture = null;
+          return;
+        }
+        var touch = event.touches[0];
+        var scroller = findScroller(event.target, touch.clientX, touch.clientY);
+        if (!scroller) {
+          gesture = null;
+          return;
+        }
+
+        repairScroller(scroller);
+        gesture = {
+          scroller: scroller,
+          startX: touch.clientX,
+          startY: touch.clientY,
+          lastY: touch.clientY,
+          observedTop: scroller.scrollTop,
+          windowX: window.scrollX,
+          windowY: window.scrollY,
+          moveCount: 0,
+          nativeScrolling: false,
+          manualScrolling: false
+        };
+      }
+
+      function continueGesture(event) {
+        if (!gesture || event.touches.length !== 1) return;
+        var scroller = gesture.scroller;
+        if (!scroller || !scroller.isConnected) {
+          gesture = null;
+          return;
+        }
+
+        var touch = event.touches[0];
+        var totalX = touch.clientX - gesture.startX;
+        var totalY = touch.clientY - gesture.startY;
+        var deltaY = gesture.lastY - touch.clientY;
+        gesture.lastY = touch.clientY;
+
+        if (Math.abs(totalY) < 8 || Math.abs(totalY) <= Math.abs(totalX) * 1.1) return;
+
+        var currentTop = scroller.scrollTop;
+        if (!gesture.manualScrolling &&
+            Math.abs(currentTop - gesture.observedTop) > 0.5) {
+          gesture.nativeScrolling = true;
+        }
+        gesture.observedTop = currentTop;
+        gesture.moveCount += 1;
+
+        if (gesture.nativeScrolling) return;
+        if (!gesture.manualScrolling && gesture.moveCount < 2) return;
+
+        var maximum = scrollRange(scroller);
+        var nextTop = Math.max(0, Math.min(maximum, currentTop + deltaY));
+        if (Math.abs(nextTop - currentTop) > 0.5) {
+          scroller.scrollTop = nextTop;
+          gesture.observedTop = nextTop;
+          gesture.manualScrolling = true;
+        }
+
+        if (gesture.manualScrolling) {
+          if (window.scrollX !== gesture.windowX || window.scrollY !== gesture.windowY) {
+            window.scrollTo(gesture.windowX, gesture.windowY);
+          }
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }
+
+      function endGesture() {
+        gesture = null;
+      }
+
+      document.addEventListener('touchstart', beginGesture, {
+        capture: true,
+        passive: true
+      });
+      document.addEventListener('touchmove', continueGesture, {
+        capture: true,
+        passive: false
+      });
+      document.addEventListener('touchend', endGesture, {
+        capture: true,
+        passive: true
+      });
+      document.addEventListener('touchcancel', endGesture, {
+        capture: true,
+        passive: true
+      });
+
+      var refreshScheduled = false;
+      var observer = new MutationObserver(function () {
+        if (refreshScheduled) return;
+        refreshScheduled = true;
+        window.requestAnimationFrame(function () {
+          refreshScheduled = false;
+          fixedScrollers = fixedScrollers.filter(function (element) {
+            if (!element.isConnected) return false;
+            repairScroller(element);
+            return true;
+          });
+        });
+      });
+      observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true
+      });
     })();
     """
 }
