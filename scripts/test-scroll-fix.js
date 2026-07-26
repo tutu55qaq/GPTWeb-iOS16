@@ -58,7 +58,11 @@ function makeElement({
     overflowY,
     id: "",
     children: [],
-    style: {},
+    style: {
+      setProperty(name, value) {
+        this[name] = value;
+      }
+    },
     classList: {
       add(name) {
         classes.add(name);
@@ -189,7 +193,7 @@ function makeEnvironment(hostname) {
     innerHeight: 800,
     innerWidth: 428,
     getComputedStyle(element) {
-      return { overflowY: element.overflowY };
+      return { overflowY: element.style["overflow-y"] || element.overflowY };
     },
     requestAnimationFrame(callback) {
       callback();
@@ -387,6 +391,7 @@ const outerScrollbar = scrollbarIn(outerEnvironment);
 assert.equal(outerScrollbar.classList.contains("gptweb-interactive"), false);
 
 const workEnvironment = makeEnvironment("chatgpt.com");
+workEnvironment.document.documentElement.scrollHeight = 1200;
 const workScroller = makeElement({
   parentElement: workEnvironment.body,
   clientHeight: 500,
@@ -420,13 +425,16 @@ documentTouch(workEnvironment, workMessage);
 assert.equal(workScrollbar.classList.contains("gptweb-interactive"), false);
 documentMove(workEnvironment);
 assert.equal(workScrollbar.classList.contains("gptweb-interactive"), true);
+workEnvironment.documentListeners.get("scroll")[0].handler({
+  target: workEnvironment.document
+});
 assert.equal(
   outerScrollbar.classList.contains("gptweb-interactive"),
   false,
   "an untouched outer frame must not cover the active Work frame strip"
 );
 
-const fastStart = barEvent(workThumb, 200);
+const fastStart = barEvent(workThumb, 400);
 workScrollbar._listeners.get("touchstart")[0].handler(fastStart);
 workEnvironment.runTimersWithDelay(360);
 assert.equal(
@@ -434,9 +442,14 @@ assert.equal(
   true,
   "stationary long press should enter fast-scroll mode"
 );
-const fastMove = barEvent(workThumb, 400);
+const fastMove = barEvent(workThumb, 200);
 workScrollbar._listeners.get("touchmove")[0].handler(fastMove);
 assert.ok(workScroller.scrollTop > 500);
+assert.equal(
+  workEnvironment.document.documentElement.scrollTop,
+  0,
+  "outer rubber-band scrolling must not replace the selected Work target"
+);
 assert.equal(
   workClippingLayer.scrollTop,
   0,
@@ -451,6 +464,37 @@ workEnvironment.runTimersWithDelay(1400);
 assert.equal(workScrollbar.classList.contains("gptweb-visible"), false);
 assert.equal(workScrollbar.classList.contains("gptweb-interactive"), false);
 
+const clippedEnvironment = makeEnvironment("chatgpt.com");
+const clippedScroller = makeElement({
+  parentElement: clippedEnvironment.body,
+  clientHeight: 500,
+  clientWidth: 400,
+  scrollHeight: 1800,
+  overflowY: "clip",
+  role: "main"
+});
+const clippedMessage = makeElement({
+  parentElement: clippedScroller,
+  clientHeight: 160,
+  clientWidth: 380,
+  scrollHeight: 160
+});
+clippedEnvironment.body.appendChild(clippedScroller);
+clippedScroller.appendChild(clippedMessage);
+clippedEnvironment.candidates.push(clippedScroller);
+runScript(clippedEnvironment);
+documentTouch(clippedEnvironment, clippedMessage);
+documentMove(clippedEnvironment);
+const clippedScrollbar = scrollbarIn(clippedEnvironment);
+clippedScrollbar._listeners.get("touchstart")[0].handler(
+  barEvent(clippedScrollbar.children[0], 400)
+);
+assert.equal(
+  clippedScroller.style["overflow-y"],
+  "auto",
+  "a clipped Work target must be repaired only when its strip is operated"
+);
+
 console.log(
-  "Work targeting, auto-hide, strip swipe, and long-press fast scroll checks passed."
+  "Work target locking, clip repair, and fast upward scrolling checks passed."
 );

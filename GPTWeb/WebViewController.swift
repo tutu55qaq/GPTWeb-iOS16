@@ -625,6 +625,7 @@ final class WebViewController: UIViewController {
       var hideTimer = 0;
       var inertiaFrame = 0;
       var pendingContentTouch = null;
+      var lastContentSelectionAt = 0;
 
       function parentElementAcrossShadowDOM(element) {
         if (!element) return null;
@@ -920,9 +921,26 @@ final class WebViewController: UIViewController {
         inertiaFrame = 0;
       }
 
+      function prepareScrollTarget(scroller) {
+        if (!scroller || !scroller.style || !scroller.style.setProperty) {
+          return scroller;
+        }
+        var overflow = overflowKind(scroller);
+        if (overflow !== 'hidden' && overflow !== 'clip') return scroller;
+        scroller.style.setProperty('overflow-y', 'auto', 'important');
+        scroller.style.setProperty(
+          '-webkit-overflow-scrolling',
+          'touch',
+          'important'
+        );
+        scroller.style.setProperty('min-height', '0', 'important');
+        void scroller.offsetHeight;
+        return scroller;
+      }
+
       function beginBarGesture(event) {
         if (event.touches.length !== 1) return;
-        var scroller = ensureActiveScroller();
+        var scroller = prepareScrollTarget(ensureActiveScroller());
         var metrics = scroller ? thumbMetrics(scroller) : null;
         if (!metrics) return;
 
@@ -975,7 +993,7 @@ final class WebViewController: UIViewController {
         var next;
         if (barGesture.fast) {
           next = barGesture.startTop +
-            totalDelta / barGesture.travel * barGesture.maximum;
+            -totalDelta / barGesture.travel * barGesture.maximum;
         } else {
           next = barGesture.scroller.scrollTop + stepDelta;
           var instantaneousVelocity = stepDelta / elapsed;
@@ -1057,6 +1075,7 @@ final class WebViewController: UIViewController {
           return;
         }
         setActiveScroller(scroller, false);
+        lastContentSelectionAt = Date.now();
         pendingContentTouch = {
           startX: touch.clientX,
           startY: touch.clientY
@@ -1095,10 +1114,17 @@ final class WebViewController: UIViewController {
 
       document.addEventListener('scroll', function (event) {
         var target = event.target;
+        var root = document.scrollingElement || document.documentElement;
         if (target === document || target === document.documentElement) {
-          target = document.scrollingElement || document.documentElement;
+          target = root;
         }
-        if (isScroller(target)) activeScroller = target;
+        var preserveNestedTarget = activeScroller &&
+          activeScroller !== root &&
+          target === root &&
+          (barGesture || Date.now() - lastContentSelectionAt < 2400);
+        if (!preserveNestedTarget && isScroller(target)) {
+          activeScroller = target;
+        }
         revealScrollbar();
       }, {
         capture: true,
