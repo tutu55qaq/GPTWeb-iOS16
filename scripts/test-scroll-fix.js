@@ -44,6 +44,7 @@ function makeElement({
   const attributes = new Map();
   const classes = new Set();
   const listeners = new Map();
+  const priorities = new Map();
   if (role) attributes.set("role", role);
 
   const element = {
@@ -59,8 +60,21 @@ function makeElement({
     id: "",
     children: [],
     style: {
-      setProperty(name, value) {
+      setProperty(name, value, priority = "") {
         this[name] = value;
+        priorities.set(name, priority);
+      },
+      getPropertyValue(name) {
+        return this[name] || "";
+      },
+      getPropertyPriority(name) {
+        return priorities.get(name) || "";
+      },
+      removeProperty(name) {
+        const value = this[name] || "";
+        delete this[name];
+        priorities.delete(name);
+        return value;
       }
     },
     classList: {
@@ -374,6 +388,12 @@ scrollbar._listeners.get("touchcancel")[0].handler({
   preventDefault() {},
   stopPropagation() {}
 });
+environment.runTimersWithDelay(1600);
+assert.equal(
+  scroller.style["-webkit-overflow-scrolling"],
+  undefined,
+  "a native chat target must have its temporary WebKit repair restored"
+);
 
 const outerEnvironment = makeEnvironment("chatgpt.com");
 const outerShell = makeElement({
@@ -434,7 +454,7 @@ assert.equal(
   "an untouched outer frame must not cover the active Work frame strip"
 );
 
-const fastStart = barEvent(workThumb, 400);
+const fastStart = barEvent(workThumb, 200);
 workScrollbar._listeners.get("touchstart")[0].handler(fastStart);
 workEnvironment.runTimersWithDelay(360);
 assert.equal(
@@ -442,7 +462,7 @@ assert.equal(
   true,
   "stationary long press should enter fast-scroll mode"
 );
-const fastMove = barEvent(workThumb, 200);
+const fastMove = barEvent(workThumb, 400);
 workScrollbar._listeners.get("touchmove")[0].handler(fastMove);
 assert.ok(workScroller.scrollTop > 500);
 assert.equal(
@@ -461,8 +481,14 @@ workScrollbar._listeners.get("touchend")[0].handler({
   stopPropagation() {}
 });
 workEnvironment.runTimersWithDelay(1400);
+workEnvironment.runTimersWithDelay(1600);
 assert.equal(workScrollbar.classList.contains("gptweb-visible"), false);
 assert.equal(workScrollbar.classList.contains("gptweb-interactive"), false);
+assert.equal(
+  workScroller.style["-webkit-overflow-scrolling"],
+  undefined,
+  "temporary repair on an already-native Work target must be restored"
+);
 
 const clippedEnvironment = makeEnvironment("chatgpt.com");
 const clippedScroller = makeElement({
@@ -487,14 +513,25 @@ documentTouch(clippedEnvironment, clippedMessage);
 documentMove(clippedEnvironment);
 const clippedScrollbar = scrollbarIn(clippedEnvironment);
 clippedScrollbar._listeners.get("touchstart")[0].handler(
-  barEvent(clippedScrollbar.children[0], 400)
+  barEvent(clippedScrollbar.children[0], 200)
 );
 assert.equal(
   clippedScroller.style["overflow-y"],
   "auto",
   "a clipped Work target must be repaired only when its strip is operated"
 );
+clippedScrollbar._listeners.get("touchend")[0].handler({
+  cancelable: true,
+  preventDefault() {},
+  stopPropagation() {}
+});
+clippedEnvironment.runTimersWithDelay(1600);
+assert.equal(
+  clippedScroller.style["overflow-y"],
+  "auto",
+  "the repair must remain on a Work target that originally used overflow: clip"
+);
 
 console.log(
-  "Work target locking, clip repair, and fast upward scrolling checks passed."
+  "Work target locking, reversible repair, and intuitive fast dragging checks passed."
 );

@@ -588,6 +588,7 @@ final class WebViewController: UIViewController {
         '  box-shadow: none;',
         '  pointer-events: none;',
         '  touch-action: none !important;',
+        '  -webkit-touch-callout: none !important;',
         '  -webkit-user-select: none;',
         '  user-select: none;',
         '}',
@@ -923,26 +924,82 @@ final class WebViewController: UIViewController {
 
       function prepareScrollTarget(scroller) {
         if (!scroller || !scroller.style || !scroller.style.setProperty) {
-          return scroller;
+          return {
+            scroller: scroller,
+            persistent: true,
+            saved: []
+          };
         }
         var overflow = overflowKind(scroller);
-        if (overflow !== 'hidden' && overflow !== 'clip') return scroller;
+        var properties = [
+          'overflow-y',
+          '-webkit-overflow-scrolling',
+          'overscroll-behavior-y',
+          'touch-action',
+          'min-height'
+        ];
+        var saved = properties.map(function (name) {
+          return {
+            name: name,
+            value: scroller.style.getPropertyValue ?
+              scroller.style.getPropertyValue(name) :
+              String(scroller.style[name] || ''),
+            priority: scroller.style.getPropertyPriority ?
+              scroller.style.getPropertyPriority(name) :
+              ''
+          };
+        });
         scroller.style.setProperty('overflow-y', 'auto', 'important');
         scroller.style.setProperty(
           '-webkit-overflow-scrolling',
-          'touch',
+          'auto',
           'important'
         );
+        scroller.style.setProperty(
+          'overscroll-behavior-y',
+          'contain',
+          'important'
+        );
+        scroller.style.setProperty('touch-action', 'pan-y', 'important');
         scroller.style.setProperty('min-height', '0', 'important');
         void scroller.offsetHeight;
-        return scroller;
+        return {
+          scroller: scroller,
+          persistent: overflow === 'hidden' || overflow === 'clip',
+          saved: saved
+        };
+      }
+
+      function restoreScrollTarget(prepared) {
+        if (!prepared || prepared.persistent || !prepared.scroller) return;
+        if (barGesture && barGesture.scroller === prepared.scroller) {
+          window.setTimeout(function () {
+            restoreScrollTarget(prepared);
+          }, 500);
+          return;
+        }
+        var style = prepared.scroller.style;
+        prepared.saved.forEach(function (entry) {
+          if (entry.value) {
+            style.setProperty(entry.name, entry.value, entry.priority);
+          } else if (style.removeProperty) {
+            style.removeProperty(entry.name);
+          } else {
+            style[entry.name] = '';
+          }
+        });
+        void prepared.scroller.offsetHeight;
       }
 
       function beginBarGesture(event) {
         if (event.touches.length !== 1) return;
-        var scroller = prepareScrollTarget(ensureActiveScroller());
+        var prepared = prepareScrollTarget(ensureActiveScroller());
+        var scroller = prepared.scroller;
         var metrics = scroller ? thumbMetrics(scroller) : null;
-        if (!metrics) return;
+        if (!metrics) {
+          restoreScrollTarget(prepared);
+          return;
+        }
 
         var touch = event.touches[0];
         cancelInertia();
@@ -961,7 +1018,8 @@ final class WebViewController: UIViewController {
           fast: false,
           moved: false,
           velocity: 0,
-          longPressTimer: 0
+          longPressTimer: 0,
+          prepared: prepared
         };
         barGesture.longPressTimer = window.setTimeout(function () {
           if (!barGesture || barGesture.moved) return;
@@ -993,7 +1051,7 @@ final class WebViewController: UIViewController {
         var next;
         if (barGesture.fast) {
           next = barGesture.startTop +
-            -totalDelta / barGesture.travel * barGesture.maximum;
+            totalDelta / barGesture.travel * barGesture.maximum;
         } else {
           next = barGesture.scroller.scrollTop + stepDelta;
           var instantaneousVelocity = stepDelta / elapsed;
@@ -1047,6 +1105,9 @@ final class WebViewController: UIViewController {
         if (!cancelled && !finished.fast) {
           startInertia(finished.scroller, finished.velocity);
         }
+        window.setTimeout(function () {
+          restoreScrollTarget(finished.prepared);
+        }, 1600);
         if (event.cancelable) event.preventDefault();
         event.stopPropagation();
         scheduleUpdate();
