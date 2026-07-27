@@ -25,9 +25,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.browserController = browserController
         self.window = window
 
+        IncomingDocumentRouter.shared.register { [weak browserController] urls in
+            browserController?.receiveDocuments(urls)
+        }
+
         let incomingURLs = connectionOptions.urlContexts.map(\.url)
         if !incomingURLs.isEmpty {
-            browserController.receiveDocuments(Array(incomingURLs))
+            IncomingDocumentRouter.shared.receive(Array(incomingURLs))
         }
     }
 
@@ -35,7 +39,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         _ scene: UIScene,
         openURLContexts URLContexts: Set<UIOpenURLContext>
     ) {
-        browserController?.receiveDocuments(URLContexts.map(\.url))
+        IncomingDocumentRouter.shared.receive(URLContexts.map(\.url))
     }
 
     func sceneWillEnterForeground(_ scene: UIScene) {

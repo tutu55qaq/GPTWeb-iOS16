@@ -63,8 +63,8 @@ manifest = json.loads(
 )
 if manifest.get("manifest_version") != 2:
     raise SystemExit("Safari Extension 必须使用兼容 iOS 16 的 Manifest V2")
-if manifest.get("version") != "1.2.3":
-    raise SystemExit("Safari Extension 版本号不是 1.2.3")
+if manifest.get("version") != "1.2.4":
+    raise SystemExit("Safari Extension 版本号不是 1.2.4")
 content_scripts = manifest.get("content_scripts", [])
 if len(content_scripts) != 1:
     raise SystemExit("Safari Extension content_scripts 配置错误")
@@ -144,10 +144,10 @@ if "SAFARI_FIX_BUNDLE_IDENTIFIER = com.example.gptweb.safarifix" not in base_con
     raise SystemExit("Base.xcconfig 的 Safari 修复宿主 Bundle ID 不正确")
 if "PRODUCT_BUNDLE_IDENTIFIER = $(HOST_BUNDLE_IDENTIFIER)" not in base_config:
     raise SystemExit("主应用没有使用宿主 Bundle ID")
-if "MARKETING_VERSION = 1.2.3" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.3")
-if "CURRENT_PROJECT_VERSION = 10" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新构建号不是 10")
+if "MARKETING_VERSION = 1.2.4" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.4")
+if "CURRENT_PROJECT_VERSION = 11" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新构建号不是 11")
 if 'EXTRA_SETTINGS+=("HOST_BUNDLE_IDENTIFIER=$BUNDLE_ID")' not in build_script:
     raise SystemExit("自定义主应用 Bundle ID 没有传给 Xcode")
 if '"SAFARI_FIX_BUNDLE_IDENTIFIER=$SAFARI_FIX_BUNDLE_ID"' not in build_script:
@@ -165,9 +165,14 @@ if info.get("CFBundleName") != "ChatGPT":
     raise SystemExit("应用名称不是 ChatGPT")
 if info.get("CFBundleIconName") != "ChatGPTIcon":
     raise SystemExit("主应用没有使用新的 ChatGPTIcon 缓存键")
-if info.get("LSSupportsOpeningDocumentsInPlace") is not True:
-    raise SystemExit("主应用没有启用原地打开文档")
+if info.get("LSSupportsOpeningDocumentsInPlace") is not False:
+    raise SystemExit("主应用必须让系统先复制文档，不能原地打开")
 document_types = info.get("CFBundleDocumentTypes", [])
+if not document_types or any(
+    document_type.get("CFBundleTypeRole") != "Viewer"
+    for document_type in document_types
+):
+    raise SystemExit("主应用文档类型必须使用只读 Viewer 角色")
 declared_content_types = {
     content_type
     for document_type in document_types
@@ -196,6 +201,7 @@ if extension_info.get("CFBundleDisplayName") != "ChatGPT Work 滚动修复":
 
 swift = (root / "GPTWeb/WebViewController.swift").read_text(encoding="utf-8")
 scene_swift = (root / "GPTWeb/SceneDelegate.swift").read_text(encoding="utf-8")
+app_swift = (root / "GPTWeb/AppDelegate.swift").read_text(encoding="utf-8")
 for marker in (
     'source: Self.workRepairDotScript',
     'data-gptweb-scroll-repaired',
@@ -204,19 +210,33 @@ for marker in (
     'isAttachment || !navigationResponse.canShowMIMEType ? .download : .allow',
     'input.files = transfer.files;',
     'NSFileCoordinator(filePresenter: nil)',
-    'UIDropInteraction(delegate: self)',
-    'loadFileRepresentation',
-    'source: Self.blockUnsafeWebFileDropScript',
+    'try fileManager.copyItem(',
+    'startAccessingSecurityScopedResource()',
 ):
     if marker not in swift:
         raise SystemExit(f"WebViewController.swift 缺少回归标记：{marker}")
 for marker in (
     "connectionOptions.urlContexts",
     "openURLContexts URLContexts",
-    "browserController?.receiveDocuments",
+    "IncomingDocumentRouter.shared.register",
+    "IncomingDocumentRouter.shared.receive",
 ):
     if marker not in scene_swift:
         raise SystemExit(f"SceneDelegate.swift 缺少回归标记：{marker}")
+for marker in (
+    "final class IncomingDocumentRouter",
+    "launchOptions?[.url]",
+    "open url: URL",
+):
+    if marker not in app_swift:
+        raise SystemExit(f"AppDelegate.swift 缺少回归标记：{marker}")
+for removed_marker in (
+    "UIDropInteraction",
+    "loadFileRepresentation",
+    "blockUnsafeWebFileDropScript",
+):
+    if removed_marker in swift:
+        raise SystemExit(f"WebViewController.swift 仍包含已放弃的拖放代码：{removed_marker}")
 
 print("Plist、Safari Extension、Asset Catalog 和工程引用检查通过。")
 PY

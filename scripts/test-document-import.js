@@ -13,6 +13,10 @@ const sceneSource = fs.readFileSync(
   path.join(projectRoot, "GPTWeb", "SceneDelegate.swift"),
   "utf8"
 );
+const appSource = fs.readFileSync(
+  path.join(projectRoot, "GPTWeb", "AppDelegate.swift"),
+  "utf8"
+);
 
 function extractSwiftMultilineString(name) {
   const declaration = `private static let ${name} = """`;
@@ -34,12 +38,8 @@ const availabilityScript = extractSwiftMultilineString(
 const finalizeScript = extractSwiftMultilineString(
   "finalizeIncomingUploadScript"
 );
-const dropBlockScript = extractSwiftMultilineString(
-  "blockUnsafeWebFileDropScript"
-);
 
 new Function("window", "document", "DataTransfer", "File", "Blob", availabilityScript);
-new Function("window", "document", dropBlockScript);
 new Function(
   "window",
   "document",
@@ -83,22 +83,15 @@ assert.match(availabilityScript, /composer.*plus|plus.*composer/);
 assert.match(swiftSource, /maximumAutomaticAttachmentBytes/);
 assert.match(swiftSource, /NSFileCoordinator\(filePresenter: nil\)/);
 assert.match(swiftSource, /options: \[\.withoutChanges\]/);
-assert.match(swiftSource, /UIDropInteraction\(delegate: self\)/);
-assert.match(swiftSource, /extension WebViewController: UIDropInteractionDelegate/);
-assert.match(swiftSource, /loadFileRepresentation/);
-assert.match(swiftSource, /source: Self\.blockUnsafeWebFileDropScript/);
-assert.match(swiftSource, /injectionTime: \.atDocumentStart/);
-for (const marker of [
-  "event.preventDefault()",
-  "event.stopImmediatePropagation()",
-  "'dragenter', 'dragover', 'drop'"
-]) {
-  assert.ok(
-    dropBlockScript.includes(marker),
-    `unsafe WebKit drop blocker is missing marker: ${marker}`
-  );
-}
+assert.match(swiftSource, /try fileManager\.copyItem/);
+assert.match(swiftSource, /startAccessingSecurityScopedResource/);
+assert.doesNotMatch(swiftSource, /UIDropInteraction/);
+assert.doesNotMatch(swiftSource, /loadFileRepresentation/);
+assert.match(appSource, /final class IncomingDocumentRouter/);
+assert.match(appSource, /launchOptions\?\[\.url\]/);
+assert.match(appSource, /open url: URL/);
+assert.match(sceneSource, /IncomingDocumentRouter\.shared\.register/);
 
 console.log(
-  "Document Open In, native drop, and automatic attachment checks passed."
+  "Copied document Open In and automatic attachment checks passed."
 );

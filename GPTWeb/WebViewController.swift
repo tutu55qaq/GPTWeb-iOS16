@@ -30,12 +30,10 @@ final class WebViewController: UIViewController {
     private var pendingDocumentErrorMessage: String?
     private var isAutomaticallyAttachingDocuments = false
     private var automaticAttachmentAttemptCount = 0
-    private var documentDropInteraction: UIDropInteraction?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         configureView()
-        configureDocumentDropInteraction()
         configureObservers()
         configureConnectivity()
         removeExpiredIncomingDocuments()
@@ -80,22 +78,36 @@ final class WebViewController: UIViewController {
     }
 
     func receiveDocuments(_ sourceURLs: [URL]) {
-        let fileURLs = sourceURLs.filter(\.isFileURL)
-        guard !fileURLs.isEmpty else { return }
+        let sources = sourceURLs
+            .filter(\.isFileURL)
+            .map { sourceURL in
+                (
+                    url: sourceURL,
+                    hasSecurityScope:
+                        sourceURL.startAccessingSecurityScopedResource()
+                )
+            }
+        guard !sources.isEmpty else { return }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            defer {
+                for source in sources where source.hasSecurityScope {
+                    source.url.stopAccessingSecurityScopedResource()
+                }
+            }
             guard let self else { return }
+
             var cachedURLs: [URL] = []
             var failures: [String] = []
 
-            for sourceURL in fileURLs {
+            for source in sources {
                 do {
                     cachedURLs.append(try self.cacheIncomingDocument(
-                        sourceURL,
-                        preferredFilename: sourceURL.lastPathComponent
+                        source.url,
+                        preferredFilename: source.url.lastPathComponent
                     ))
                 } catch {
-                    failures.append(sourceURL.lastPathComponent)
+                    failures.append(source.url.lastPathComponent)
                 }
             }
 
@@ -113,12 +125,6 @@ final class WebViewController: UIViewController {
         preferredFilename: String
     ) throws -> URL {
         let fileManager = FileManager.default
-        let didAccess = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess {
-                sourceURL.stopAccessingSecurityScopedResource()
-            }
-        }
 
         let rootDirectory = try fileManager.url(
             for: .cachesDirectory,
@@ -141,6 +147,17 @@ final class WebViewController: UIViewController {
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ":", with: "_")
         let destination = rootDirectory.appendingPathComponent(safeFilename)
+
+        do {
+            try fileManager.copyItem(
+                at: sourceURL,
+                to: destination
+            )
+            return destination
+        } catch {
+            // A copied Inbox file succeeds above. Keep coordinated reading as
+            // a fallback for providers that still return a security-scoped URL.
+        }
 
         let coordinator = NSFileCoordinator(filePresenter: nil)
         var coordinationError: NSError?
@@ -606,11 +623,6 @@ final class WebViewController: UIViewController {
 
         let contentController = WKUserContentController()
         contentController.addUserScript(WKUserScript(
-            source: Self.blockUnsafeWebFileDropScript,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
-        ))
-        contentController.addUserScript(WKUserScript(
             source: Self.workRepairDotScript,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: false
@@ -631,59 +643,6 @@ final class WebViewController: UIViewController {
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = true
         return webView
-    }
-
-    private func configureDocumentDropInteraction() {
-        if documentDropInteraction == nil {
-            documentDropInteraction = UIDropInteraction(delegate: self)
-        }
-        removeWebKitDropInteractions(from: webView)
-
-        guard let documentDropInteraction,
-              !webView.interactions.contains(where: {
-                  $0 === documentDropInteraction
-              }) else {
-            return
-        }
-        webView.addInteraction(documentDropInteraction)
-    }
-
-    private func removeWebKitDropInteractions(from rootView: UIView) {
-        for interaction in rootView.interactions {
-            guard let dropInteraction = interaction as? UIDropInteraction else {
-                continue
-            }
-            if let documentDropInteraction,
-               dropInteraction === documentDropInteraction {
-                continue
-            }
-            rootView.removeInteraction(dropInteraction)
-        }
-        rootView.subviews.forEach {
-            removeWebKitDropInteractions(from: $0)
-        }
-    }
-
-    private func loadableTypeIdentifier(
-        for provider: NSItemProvider
-    ) -> String? {
-        provider.registeredTypeIdentifiers.first { identifier in
-            guard let type = UTType(identifier) else { return false }
-            return type.conforms(to: .data)
-        }
-    }
-
-    private func preferredDropFilename(
-        provider: NSItemProvider,
-        temporaryURL: URL
-    ) -> String {
-        var filename = provider.suggestedName
-            ?? temporaryURL.lastPathComponent
-        if (filename as NSString).pathExtension.isEmpty,
-           !temporaryURL.pathExtension.isEmpty {
-            filename += ".\(temporaryURL.pathExtension)"
-        }
-        return filename
     }
 
     private func configureView() {
@@ -868,50 +827,6 @@ final class WebViewController: UIViewController {
         24 * 1_024 * 1_024
     private static let maximumAutomaticAttachmentAttempts = 10
     private static let javaScriptChunkLength = 128 * 1_024
-
-    private static let blockUnsafeWebFileDropScript = """
-    (function () {
-      if (window.__gptwebNativeFileDropInstalled) return;
-      window.__gptwebNativeFileDropInstalled = true;
-
-      function containsFiles(event) {
-        var transfer = event && event.dataTransfer;
-        if (!transfer) return false;
-
-        var items = transfer.items || [];
-        for (var itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
-          if (items[itemIndex] && items[itemIndex].kind === 'file') {
-            return true;
-          }
-        }
-
-        var types = transfer.types || [];
-        for (var typeIndex = 0; typeIndex < types.length; typeIndex += 1) {
-          var type = String(types[typeIndex] || '').toLowerCase();
-          if (type === 'files' ||
-              type === 'public.file-url' ||
-              type === 'application/x-moz-file') {
-            return true;
-          }
-        }
-        return false;
-      }
-
-      function blockWebFileDrop(event) {
-        if (!containsFiles(event)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (typeof event.stopImmediatePropagation === 'function') {
-          event.stopImmediatePropagation();
-        }
-      }
-
-      ['dragenter', 'dragover', 'drop'].forEach(function (eventName) {
-        window.addEventListener(eventName, blockWebFileDrop, true);
-        document.addEventListener(eventName, blockWebFileDrop, true);
-      });
-    })();
-    """
 
     private static let uploadInputAvailabilityScript = """
     (function () {
@@ -2508,7 +2423,6 @@ extension WebViewController: WKNavigationDelegate {
         lastLoadFailed = false
         recoveryAttempts.removeAll()
         persistCurrentURL()
-        configureDocumentDropInteraction()
         attemptAutomaticDocumentAttachment()
     }
 
@@ -2562,93 +2476,6 @@ extension WebViewController: WKNavigationDelegate {
         didBecome download: WKDownload
     ) {
         beginDownload(download)
-    }
-}
-
-extension WebViewController: UIDropInteractionDelegate {
-    func dropInteraction(
-        _ interaction: UIDropInteraction,
-        canHandle session: UIDropSession
-    ) -> Bool {
-        session.items.contains {
-            loadableTypeIdentifier(for: $0.itemProvider) != nil
-        }
-    }
-
-    func dropInteraction(
-        _ interaction: UIDropInteraction,
-        sessionDidUpdate session: UIDropSession
-    ) -> UIDropProposal {
-        UIDropProposal(
-            operation: dropInteraction(
-                interaction,
-                canHandle: session
-            ) ? .copy : .cancel
-        )
-    }
-
-    func dropInteraction(
-        _ interaction: UIDropInteraction,
-        performDrop session: UIDropSession
-    ) {
-        let providers = session.items.map(\.itemProvider)
-        let group = DispatchGroup()
-        let lock = NSLock()
-        var cachedURLs: [URL] = []
-        var failedNames: [String] = []
-
-        for provider in providers {
-            guard let typeIdentifier = loadableTypeIdentifier(
-                for: provider
-            ) else {
-                continue
-            }
-
-            group.enter()
-            provider.loadFileRepresentation(
-                forTypeIdentifier: typeIdentifier
-            ) { [weak self] temporaryURL, _ in
-                defer { group.leave() }
-                guard let self, let temporaryURL else {
-                    lock.lock()
-                    failedNames.append(
-                        provider.suggestedName ?? "未知文件"
-                    )
-                    lock.unlock()
-                    return
-                }
-
-                do {
-                    let filename = self.preferredDropFilename(
-                        provider: provider,
-                        temporaryURL: temporaryURL
-                    )
-                    // NSItemProvider deletes this URL when the completion
-                    // handler returns, so it must be copied synchronously.
-                    let cachedURL = try self.cacheIncomingDocument(
-                        temporaryURL,
-                        preferredFilename: filename
-                    )
-                    lock.lock()
-                    cachedURLs.append(cachedURL)
-                    lock.unlock()
-                } catch {
-                    lock.lock()
-                    failedNames.append(
-                        provider.suggestedName
-                            ?? temporaryURL.lastPathComponent
-                    )
-                    lock.unlock()
-                }
-            }
-        }
-
-        group.notify(queue: .main) { [weak self] in
-            self?.finishReceivingDocuments(
-                cachedURLs,
-                failedNames: failedNames
-            )
-        }
     }
 }
 
