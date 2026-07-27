@@ -80,6 +80,84 @@ Apple 账号。
 16.3 自带的 WebKit 引擎，无法修复 `chatgpt.com` 未来可能使用而旧 WebKit 不支持的
 JavaScript/CSS 特性，也不能保证一定快于一个全新、无其他标签页的 Safari。
 
+## Work 模式滚动修复原理
+
+### 它修复的是什么
+
+这个功能不会修改、替换或破解 iOS 的 WebKit 内核。它是由 `WKUserScript` 注入
+`chatgpt.com` 页面及其子 Frame 的局部 DOM/CSS 兼容补丁。
+
+在 iOS 16.3 上，ChatGPT Work 页面可能出现这样的状态：手指触摸的是内部消息列表，
+但旧版 WebKit 没有把这个嵌套元素继续当作可触摸滚动区域，手势被交给外层页面，
+表现为整个页面轻微回弹，而消息列表不移动。这也解释了为什么同一问题可能同时出现
+在本应用和系统 Safari 中——两者使用的是同一代 WebKit。
+
+目前没有证据能把根因完全归结为单一的 Safari Bug；更准确的说法是，ChatGPT Work
+当前的嵌套布局、动态 DOM 和 iOS 16.3 WebKit 的滚动层/手势判定组合在一起触发了
+兼容问题。
+
+### 长按圆点时发生了什么
+
+1. **被动检测手势。** 页面上的 `touchstart`/`touchmove` 监听器使用
+   `passive: true`，只在检测到纵向滑动时显示右上角圆点，不取消页面原本的触摸事件。
+2. **锁定实际消息容器。** 脚本从触摸位置向上查找有真实滚动范围
+   （`scrollHeight > clientHeight`）的父元素，优先选择
+   `overflow-y: auto/scroll/overlay` 的原生滚动容器；对 Work 中使用
+   `hidden/clip` 的异常容器，再结合 `main`、`dialog`、滚动类名、可见面积和滚动范围
+   评分。外层页面的橡皮筋回弹不会覆盖已经选中的内部容器。
+3. **等待明确确认。** 只有在圆点上持续按住约 360 ms 才执行修复，普通浏览、普通
+   滑动和误触不会改写页面样式。
+4. **重新声明滚动条件。** 脚本只对选中的元素写入以下内联样式：
+
+   ```css
+   overflow-y: auto !important;
+   -webkit-overflow-scrolling: auto !important;
+   overscroll-behavior-y: contain !important;
+   touch-action: pan-y !important;
+   min-height: 0 !important;
+   ```
+
+   - `overflow-y` 让该元素明确成为纵向滚动容器。
+   - `-webkit-overflow-scrolling` 的重新赋值促使旧 WebKit 更新该元素的滚动层状态。
+   - `overscroll-behavior-y` 尽量避免手势继续传给外层页面。
+   - `touch-action` 明确允许原生纵向平移手势。
+   - `min-height: 0` 修正 Flex/Grid 子项因默认最小高度而撑开、失去内部滚动范围的
+     常见情况。
+5. **刷新布局后交还原生滚动。** 读取一次 `offsetHeight`，让 WebKit 在下一次触摸
+   前提交新的布局和滚动层状态。脚本随后停止介入，由 iOS 原生触摸滚动、惯性和系统
+   滚动条继续工作。
+
+脚本不会写入 `scrollTop`，不会模拟手指位移，也没有自定义惯性动画，因此不会再产生
+此前自定义滚动条“一顿一顿”的手感。修复成功的元素会写入
+`data-gptweb-scroll-repaired="true"` 标记，避免重复弹出圆点；如果 ChatGPT 后续
+重新创建了 Work 消息容器，新元素没有这个标记，纵向滑动时圆点会再次出现，可重新
+长按修复。
+
+对应实现位于 `GPTWeb/WebViewController.swift` 的 `workRepairDotScript`，无
+`scrollTop` 接管、目标锁定和持久修复行为由 `scripts/test-scroll-fix.js` 做静态
+回归检查。
+
+### 能否在 iPhone 的 Safari 中使用
+
+可以使用同一思路，但本应用不能直接修改系统 Safari 中已经打开的网页。iOS 的应用
+沙盒把 `WKWebView` 和 Safari 标签页隔离，本应用注入的 `WKUserScript` 只对本应用
+自己的 WebView 生效。
+
+在 Safari 中有两种实现方式：
+
+- **推荐：Safari Web Extension。** iOS 15 起支持 Safari Web Extension。可以把
+  同一段修复逻辑作为只匹配 `https://chatgpt.com/*` 的 content script，在页面和
+  子 Frame 加载后自动注入。安装包含扩展的 App 后，需要在
+  “设置 → Safari → 扩展”中启用，并允许它访问 `chatgpt.com`。这是长期使用最可靠
+  的方案，也能继续保持 Safari 自己的 Cookie、登录状态、下载和标签页功能。
+- **临时方案：JavaScript 书签。** 可以把简化后的修复函数保存为
+  `javascript:` 书签，需要时手动运行。它不持久，页面刷新、Work 重建 DOM 后需要
+  再运行；而且书签脚本对不同 Frame 的访问和执行时机不如正式扩展稳定，因此更适合
+  验证，不适合长期使用。
+
+Safari Web Extension 仍然不能修复 WebKit 内核本身；它只是获得 Safari 授权后，
+在 `chatgpt.com` 内自动执行相同的页面级兼容补丁。
+
 ## 安全边界
 
 - 账号和会话只保存在系统管理的 WebKit 数据仓库。
