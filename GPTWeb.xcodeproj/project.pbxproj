@@ -19,6 +19,9 @@
 		11000000000000000000000A /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000010 /* manifest.json */; };
 		11000000000000000000000B /* content.js in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000011 /* content.js */; };
 		11000000000000000000000C /* SafariExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 220000000000000000000012 /* SafariExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		11000000000000000000000D /* SafariFixAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000013 /* SafariFixAppDelegate.swift */; };
+		11000000000000000000000E /* SafariFixViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000014 /* SafariFixViewController.swift */; };
+		11000000000000000000000F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000008 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -64,6 +67,10 @@
 		220000000000000000000010 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = manifest.json; sourceTree = "<group>"; };
 		220000000000000000000011 /* content.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = content.js; sourceTree = "<group>"; };
 		220000000000000000000012 /* SafariExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SafariExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		220000000000000000000013 /* SafariFixAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafariFixAppDelegate.swift; sourceTree = "<group>"; };
+		220000000000000000000014 /* SafariFixViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafariFixViewController.swift; sourceTree = "<group>"; };
+		220000000000000000000015 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		220000000000000000000016 /* SafariFixHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SafariFixHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -81,6 +88,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		330000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -88,6 +102,7 @@
 			isa = PBXGroup;
 			children = (
 				440000000000000000000002 /* GPTWeb */,
+				440000000000000000000007 /* SafariFixHost */,
 				440000000000000000000005 /* SafariExtension */,
 				440000000000000000000003 /* Configs */,
 				440000000000000000000004 /* Products */,
@@ -124,6 +139,7 @@
 			isa = PBXGroup;
 			children = (
 				22000000000000000000000A /* GPTWeb.app */,
+				220000000000000000000016 /* SafariFixHost.app */,
 				220000000000000000000012 /* SafariExtension.appex */,
 			);
 			name = Products;
@@ -148,6 +164,16 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		440000000000000000000007 /* SafariFixHost */ = {
+			isa = PBXGroup;
+			children = (
+				220000000000000000000013 /* SafariFixAppDelegate.swift */,
+				220000000000000000000014 /* SafariFixViewController.swift */,
+				220000000000000000000015 /* Info.plist */,
+			);
+			path = SafariFixHost;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -158,12 +184,10 @@
 				770000000000000000000001 /* Sources */,
 				330000000000000000000001 /* Frameworks */,
 				880000000000000000000001 /* Resources */,
-				BB0000000000000000000001 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				DD0000000000000000000001 /* PBXTargetDependency */,
 			);
 			name = GPTWeb;
 			productName = GPTWeb;
@@ -187,6 +211,25 @@
 			productReference = 220000000000000000000012 /* SafariExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		550000000000000000000003 /* SafariFixHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 660000000000000000000004 /* Build configuration list for PBXNativeTarget "SafariFixHost" */;
+			buildPhases = (
+				770000000000000000000003 /* Sources */,
+				330000000000000000000003 /* Frameworks */,
+				880000000000000000000003 /* Resources */,
+				BB0000000000000000000001 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DD0000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = SafariFixHost;
+			productName = SafariFixHost;
+			productReference = 220000000000000000000016 /* SafariFixHost.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -201,6 +244,9 @@
 						CreatedOnToolsVersion = 14.2;
 					};
 					550000000000000000000002 = {
+						CreatedOnToolsVersion = 14.2;
+					};
+					550000000000000000000003 = {
 						CreatedOnToolsVersion = 14.2;
 					};
 				};
@@ -219,6 +265,7 @@
 			projectRoot = "";
 			targets = (
 				550000000000000000000001 /* GPTWeb */,
+				550000000000000000000003 /* SafariFixHost */,
 				550000000000000000000002 /* SafariExtension */,
 			);
 		};
@@ -243,6 +290,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		880000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				11000000000000000000000F /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -264,6 +319,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				110000000000000000000009 /* SafariWebExtensionHandler.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		770000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				11000000000000000000000D /* SafariFixAppDelegate.swift in Sources */,
+				11000000000000000000000E /* SafariFixViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -308,7 +372,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 22000000000000000000000C /* Debug.xcconfig */;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = ChatGPTIcon;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
@@ -326,7 +390,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 22000000000000000000000D /* Release.xcconfig */;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = ChatGPTIcon;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
@@ -354,7 +418,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "$(HOST_BUNDLE_IDENTIFIER).SafariExtension";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SAFARI_FIX_BUNDLE_IDENTIFIER).SafariExtension";
 				PRODUCT_MODULE_NAME = SafariExtension;
 				PRODUCT_NAME = SafariExtension;
 				SKIP_INSTALL = YES;
@@ -376,10 +440,50 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "$(HOST_BUNDLE_IDENTIFIER).SafariExtension";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SAFARI_FIX_BUNDLE_IDENTIFIER).SafariExtension";
 				PRODUCT_MODULE_NAME = SafariExtension;
 				PRODUCT_NAME = SafariExtension;
 				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			};
+			name = Release;
+		};
+		AA0000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 22000000000000000000000C /* Debug.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = ChatGPTIcon;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = SafariFixHost/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SAFARI_FIX_BUNDLE_IDENTIFIER)";
+				PRODUCT_MODULE_NAME = SafariFixHost;
+				PRODUCT_NAME = SafariFixHost;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 22000000000000000000000D /* Release.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = ChatGPTIcon;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = SafariFixHost/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SAFARI_FIX_BUNDLE_IDENTIFIER)";
+				PRODUCT_MODULE_NAME = SafariFixHost;
+				PRODUCT_NAME = SafariFixHost;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 			};
 			name = Release;
@@ -410,6 +514,15 @@
 			buildConfigurations = (
 				AA0000000000000000000005 /* Debug */,
 				AA0000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		660000000000000000000004 /* Build configuration list for PBXNativeTarget "SafariFixHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000007 /* Debug */,
+				AA0000000000000000000008 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

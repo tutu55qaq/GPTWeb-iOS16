@@ -7,12 +7,16 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 required_files=(
   "GPTWeb.xcodeproj/project.pbxproj"
   "GPTWeb.xcodeproj/xcshareddata/xcschemes/GPTWeb.xcscheme"
+  "GPTWeb.xcodeproj/xcshareddata/xcschemes/SafariFixHost.xcscheme"
   "GPTWeb/AppDelegate.swift"
   "GPTWeb/SceneDelegate.swift"
   "GPTWeb/WebViewController.swift"
   "GPTWeb/Info.plist"
   "GPTWeb/PrivacyInfo.xcprivacy"
-  "GPTWeb/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
+  "GPTWeb/Assets.xcassets/ChatGPTIcon.appiconset/AppIcon-1024.png"
+  "SafariFixHost/Info.plist"
+  "SafariFixHost/SafariFixAppDelegate.swift"
+  "SafariFixHost/SafariFixViewController.swift"
   "SafariExtension/Info.plist"
   "SafariExtension/SafariWebExtensionHandler.swift"
   "SafariExtension/Resources/manifest.json"
@@ -45,6 +49,7 @@ root = pathlib.Path(sys.argv[1])
 for relative in (
     "GPTWeb/Info.plist",
     "GPTWeb/PrivacyInfo.xcprivacy",
+    "SafariFixHost/Info.plist",
     "SafariExtension/Info.plist",
 ):
     with (root / relative).open("rb") as handle:
@@ -57,8 +62,8 @@ manifest = json.loads(
 )
 if manifest.get("manifest_version") != 2:
     raise SystemExit("Safari Extension 必须使用兼容 iOS 16 的 Manifest V2")
-if manifest.get("version") != "1.2.0":
-    raise SystemExit("Safari Extension 版本号不是 1.2.0")
+if manifest.get("version") != "1.2.1":
+    raise SystemExit("Safari Extension 版本号不是 1.2.1")
 content_scripts = manifest.get("content_scripts", [])
 if len(content_scripts) != 1:
     raise SystemExit("Safari Extension content_scripts 配置错误")
@@ -74,13 +79,13 @@ if "https://chatgpt.com/*" not in content_script.get("matches", []):
 
 catalogs = [
     root / "GPTWeb/Assets.xcassets/Contents.json",
-    root / "GPTWeb/Assets.xcassets/AppIcon.appiconset/Contents.json",
+    root / "GPTWeb/Assets.xcassets/ChatGPTIcon.appiconset/Contents.json",
     root / "GPTWeb/Assets.xcassets/LaunchBackground.colorset/Contents.json",
 ]
 for path in catalogs:
     json.loads(path.read_text(encoding="utf-8"))
 
-icon_directory = root / "GPTWeb/Assets.xcassets/AppIcon.appiconset"
+icon_directory = root / "GPTWeb/Assets.xcassets/ChatGPTIcon.appiconset"
 icon_sizes = {
     "AppIcon-1024.png": (1024, 1024),
     "AppIcon-20@2x.png": (40, 40),
@@ -119,11 +124,14 @@ for marker in (
     "PrivacyInfo.xcprivacy",
     "Assets.xcassets",
     "SafariExtension.appex",
+    "SafariFixHost.app",
+    'PBXNativeTarget "SafariFixHost"',
     "SafariWebExtensionHandler.swift",
     "manifest.json in Resources",
     "content.js in Resources",
     "Embed App Extensions",
     "com.apple.product-type.app-extension",
+    "ASSETCATALOG_COMPILER_APPICON_NAME = ChatGPTIcon",
 ):
     if marker not in pbxproj:
         raise SystemExit(f"project.pbxproj 缺少标记：{marker}")
@@ -131,14 +139,21 @@ if "IPHONEOS_DEPLOYMENT_TARGET = 16.0" not in base_config:
     raise SystemExit("Base.xcconfig 的最低系统版本不是 iOS 16.0")
 if "HOST_BUNDLE_IDENTIFIER = com.example.gptweb" not in base_config:
     raise SystemExit("Base.xcconfig 的宿主 Bundle ID 不正确")
+if "SAFARI_FIX_BUNDLE_IDENTIFIER = com.example.gptweb.safarifix" not in base_config:
+    raise SystemExit("Base.xcconfig 的 Safari 修复宿主 Bundle ID 不正确")
 if "PRODUCT_BUNDLE_IDENTIFIER = $(HOST_BUNDLE_IDENTIFIER)" not in base_config:
     raise SystemExit("主应用没有使用宿主 Bundle ID")
-if "MARKETING_VERSION = 1.2.0" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.0")
-if "CURRENT_PROJECT_VERSION = 7" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新构建号不是 7")
-if 'XCODE_ARGS+=("HOST_BUNDLE_IDENTIFIER=$BUNDLE_ID")' not in build_script:
-    raise SystemExit("自定义 Bundle ID 没有同时传递给宿主与 Safari Extension")
+if "MARKETING_VERSION = 1.2.1" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.1")
+if "CURRENT_PROJECT_VERSION = 8" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新构建号不是 8")
+if 'EXTRA_SETTINGS+=("HOST_BUNDLE_IDENTIFIER=$BUNDLE_ID")' not in build_script:
+    raise SystemExit("自定义主应用 Bundle ID 没有传给 Xcode")
+if '"SAFARI_FIX_BUNDLE_IDENTIFIER=$SAFARI_FIX_BUNDLE_ID"' not in build_script:
+    raise SystemExit("自定义 Safari 修复宿主 Bundle ID 没有传给 Xcode")
+for output in ("GPTWeb-unsigned.ipa", "SafariFixHost-unsigned.ipa"):
+    if output not in build_script:
+        raise SystemExit(f"构建脚本没有生成 {output}")
 
 info = plistlib.loads((root / "GPTWeb/Info.plist").read_bytes())
 if info.get("NSAppTransportSecurity", {}).get("NSAllowsArbitraryLoads") is not False:
@@ -147,6 +162,16 @@ if info.get("CFBundleDisplayName") != "ChatGPT":
     raise SystemExit("应用显示名不是 ChatGPT")
 if info.get("CFBundleName") != "ChatGPT":
     raise SystemExit("应用名称不是 ChatGPT")
+if info.get("CFBundleIconName") != "ChatGPTIcon":
+    raise SystemExit("主应用没有使用新的 ChatGPTIcon 缓存键")
+
+safari_fix_info = plistlib.loads(
+    (root / "SafariFixHost/Info.plist").read_bytes()
+)
+if safari_fix_info.get("CFBundleDisplayName") != "ChatGPT Safari 修复":
+    raise SystemExit("Safari 修复宿主显示名不正确")
+if safari_fix_info.get("CFBundleIconName") != "ChatGPTIcon":
+    raise SystemExit("Safari 修复宿主没有使用 ChatGPTIcon")
 
 extension_info = plistlib.loads(
     (root / "SafariExtension/Info.plist").read_bytes()

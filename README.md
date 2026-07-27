@@ -2,9 +2,9 @@
 
 本项目主要解决 iPhone 13 Pro Max（iOS 16.3）访问 ChatGPT Work 时内部对话无法
 上下滑动、手势只让整个页面轻微回弹的问题，同时保留普通聊天的原生惯性滚动。它是
-一个最低支持 iOS 16.0 的个人侧载 `WKWebView` 客户端，并内置可作用于系统 Safari
-的 Web Extension。本项目完全由 GPT 在移动端对话中全程编写、调试与维护，由 GPT
-管理 GitHub 仓库并接管 GitHub Actions 云端编译、校验和发布 IPA。
+一个最低支持 iOS 16.0 的个人侧载 `WKWebView` 客户端，并提供可作用于系统 Safari
+的独立 Web Extension 宿主。本项目完全由 GPT 全程通过移动端编写、调试与维护，由
+GPT 管理 GitHub 仓库并接管 GitHub Actions 云端编译、校验和发布 IPA。
 
 > 这是用于个人侧载的非官方 WebView 客户端，与 OpenAI 没有隶属或背书关系。
 > 应用显示名与图标取自官方 ChatGPT iOS 客户端，便于替代无法安装的官方客户端；
@@ -23,8 +23,11 @@
 - 保留 WebKit 原生惯性滚动，不接管页面的滚动手势；检测到 Work 嵌套对话的纵向
   滑动后，右上角会短暂出现一个蓝色修复圆点。长按圆点会对当前容器执行一次局部
   修复，随后继续使用原生滑动与 iOS 原生滚动条，静止时圆点自动隐藏。
-- IPA 内嵌 `SafariExtension.appex`，在系统 Safari 获得 `chatgpt.com` 网站权限后，
-  会在主页面和子 Frame 中自动提供同一套 Work 滚动修复圆点。
+- 配套的独立 `SafariFixHost` IPA 内嵌 `SafariExtension.appex`；使用正常 Apple
+  开发者签名安装并获得 `chatgpt.com` 网站权限后，会在系统 Safari 的主页面和
+  子 Frame 中提供同一套 Work 滚动修复圆点。
+- TrollStore 版主程序不再嵌入 Safari 扩展，避免系统显示“插件已不可用”；它保持
+  原 Bundle ID，可直接覆盖旧版本并保留 WebKit 登录状态。
 - 键盘可交互收起、返回手势、加载进度条、深色模式与 120 Hz 刷新率。
 - 不注入 API Key，不读取或上传对话文本，不拦截网络请求。滚动修复逻辑只检查元素的
   尺寸、滚动位置和父子关系。
@@ -43,23 +46,34 @@ chmod +x scripts/build-ipa.sh
 
 ```text
 build/GPTWeb-unsigned.ipa
+build/SafariFixHost-unsigned.ipa
 ```
 
-需要自定义 Bundle ID 时：
+需要自定义两个宿主的 Bundle ID 时：
 
 ```bash
-BUNDLE_ID=com.yourname.gptweb ./scripts/build-ipa.sh
+BUNDLE_ID=com.yourname.gptweb \
+SAFARI_FIX_BUNDLE_ID=com.yourname.gptweb.safarifix \
+./scripts/build-ipa.sh
 ```
 
-生成的 IPA 不含签名和描述文件，你可以用自己的方式签名安装。
+两个 IPA 都不含签名和描述文件。`GPTWeb-unsigned.ipa` 供 TrollStore 安装；
+`SafariFixHost-unsigned.ipa` 必须用正常 Apple 开发者签名安装，且宿主和内嵌
+`.appex` 都要拥有匹配的 App ID 与 Provisioning Profile。
 
 使用 TrollStore 更新时保持相同的 Bundle ID 并直接覆盖安装，不要先卸载；这样可以
 沿用现有应用数据容器和 WebKit 登录状态。
 
 ## 在 Safari 中启用滚动修复扩展
 
-Safari Web Extension 不能单独安装，已经作为 `SafariExtension.appex` 嵌入本项目
-生成的 IPA。安装 1.2.0 或更高版本后：
+Safari Web Extension 不能作为一个裸 `.appex` 单独安装，所以本项目把它嵌入独立的
+`SafariFixHost-unsigned.ipa`。这个 IPA **不能使用 TrollStore 安装**：TrollStore
+将应用作为系统应用安装，iOS 不会把其中的 Safari Web Extension 注册到 Safari，
+典型表现就是打开宿主时提示“插件已不可用”，并且“设置 → Safari → 扩展”中完全
+看不到它。
+
+请使用 Xcode，或确实支持对宿主和内嵌 `.appex` 分别重签并生成匹配描述文件的侧载
+工具，安装 `SafariFixHost-unsigned.ipa`。安装成功后：
 
 1. 打开“设置 → Safari → 扩展”。
 2. 选择“ChatGPT Work 滚动修复”并启用。
@@ -68,22 +82,53 @@ Safari Web Extension 不能单独安装，已经作为 `SafariExtension.appex` �
 5. 进入 Work 对话并做一次纵向滑动；右上角圆点出现后长按约 360 ms，看到圆点
    放大并出现光圈后松手。
 
+如果扩展仍不在设置中，先确认安装方式不是 TrollStore，再检查签名后的 IPA 中宿主
+Bundle ID 为 `com.example.gptweb.safarifix`，扩展 Bundle ID 为
+`com.example.gptweb.safarifix.SafariExtension`，并确认两个 Bundle ID 都有各自
+匹配的签名和描述文件。
+
 扩展使用 Safari 自己的 Cookie 与登录状态，不会读取或复制本应用 WebView 的 Cookie。
 它不拦截网络请求，只在 ChatGPT 页面中检查元素尺寸、滚动范围和父子关系，并为用户
 明确选中的容器写入滚动修复 CSS。
 
+这个限制不是本项目清单文件造成的。TrollStore 项目中已经长期存在同类报告，包括
+iOS 16.2 / TrollStore 2 下 Safari 扩展不出现在设置中的
+[#843](https://github.com/opa334/TrollStore/issues/843)，以及更早的
+[#74](https://github.com/opa334/TrollStore/issues/74)、
+[#209](https://github.com/opa334/TrollStore/issues/209) 和
+[#615](https://github.com/opa334/TrollStore/issues/615)。Apple 的
+[Safari Web Extension 文档](https://developer.apple.com/documentation/safariservices/safari-web-extensions)
+也要求扩展随原生 App 打包和签名。
+
+## 更新主程序与刷新旧图标
+
+主程序继续使用 `com.example.gptweb`。在 TrollStore 中直接覆盖安装
+`GPTWeb-unsigned.ipa`，不要卸载旧版，这样应用数据容器、Cookie 和登录状态都会
+保留。
+
+1. 覆盖安装 1.2.1。
+2. 在 TrollStore 设置中执行 **Rebuild Icon Cache**。
+3. 结束多任务页面中旧的 ChatGPT 卡片，再重新打开应用。
+4. 如果多任务左上角仍是旧图标，执行一次 Respring；仍未刷新时再重启设备。
+
+1.2.1 把 Asset Catalog 的图标集缓存键从 `AppIcon` 改为 `ChatGPTIcon`，同时显式
+写入 `CFBundleIconName`。这会让新构建引用新的图标记录；但 iOS 的 SpringBoard 和
+多任务快照仍可能保留旧缓存，所以覆盖安装后仍需要执行上面的缓存刷新。
+
 ## 用 Xcode 构建
 
 1. 打开 `GPTWeb.xcodeproj`。
-2. 选择 `GPTWeb` Target，在 Signing & Capabilities 中选择你的 Team 并修改
-   Bundle Identifier。
-3. 选择真机后运行，或使用 Product → Archive。
+2. 构建主程序时选择 `GPTWeb` Scheme；保持原 Bundle ID 后可供 TrollStore 覆盖安装。
+3. 构建 Safari 扩展时选择 `SafariFixHost` Scheme，在 `SafariFixHost` 和
+   `SafariExtension` 两个 Target 中选择同一个 Team，并为两个 Bundle ID 各自生成
+   匹配的 Provisioning Profile。
+4. 选择真机后运行，或使用 Product → Archive。
 
 ## 用 GitHub Actions 生成 IPA
 
 将整个目录提交到 GitHub，打开 Actions，运行 **Build unsigned IPA**。
-完成后在该次运行的 Artifacts 中下载 `GPTWeb-unsigned-ipa`。工作流不需要证书或
-Apple 账号。
+完成后在该次运行的 Artifacts 中下载 `GPTWeb-unsigned-ipa`，其中同时包含主程序和
+Safari 修复器两个未签名 IPA。工作流不需要证书或 Apple 账号。
 
 ## 登录提示
 
@@ -164,11 +209,12 @@ Safari Web Extension，在用户授予网站权限后由 Safari 注入同一套�
 
 在 Safari 中有两种实现方式：
 
-- **推荐：内置 Safari Web Extension。** iOS 15 起支持 Safari Web Extension。
-  本项目已经把同一段修复逻辑作为只匹配 `https://chatgpt.com/*` 的 content
-  script，在页面和子 Frame 加载后自动注入。安装包含扩展的 App 后，需要在
-  “设置 → Safari → 扩展”中启用，并允许它访问 `chatgpt.com`。这是长期使用最可靠
-  的方案，也能继续保持 Safari 自己的 Cookie、登录状态、下载和标签页功能。
+- **推荐：独立 Safari Web Extension 宿主。** iOS 15 起支持 Safari Web
+  Extension。本项目已经把同一段修复逻辑作为只匹配 ChatGPT 域名的 content
+  script，在页面和子 Frame 加载后自动注入。正常开发者签名安装
+  `SafariFixHost` 后，需要在“设置 → Safari → 扩展”中启用，并允许它访问
+  `chatgpt.com`。这是长期使用最可靠的方案，也能继续保持 Safari 自己的 Cookie、
+  登录状态、下载和标签页功能。
 - **临时方案：JavaScript 书签。** 可以把简化后的修复函数保存为
   `javascript:` 书签，需要时手动运行。它不持久，页面刷新、Work 重建 DOM 后需要
   再运行；而且书签脚本对不同 Frame 的访问和执行时机不如正式扩展稳定，因此更适合
