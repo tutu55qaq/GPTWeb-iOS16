@@ -27,12 +27,15 @@ final class WebViewController: UIViewController {
     private var downloadDestinations: [ObjectIdentifier: URL] = [:]
     private var pendingDocumentURLs: [URL] = []
     private var shouldPresentDocumentNotice = false
+    private var pendingDocumentErrorMessage: String?
     private var isAutomaticallyAttachingDocuments = false
     private var automaticAttachmentAttemptCount = 0
+    private var documentDropInteraction: UIDropInteraction?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         configureView()
+        configureDocumentDropInteraction()
         configureObservers()
         configureConnectivity()
         removeExpiredIncomingDocuments()
@@ -43,6 +46,7 @@ final class WebViewController: UIViewController {
         super.viewDidAppear(animated)
         attemptAutomaticDocumentAttachment()
         presentIncomingDocumentNoticeIfNeeded()
+        presentPendingDocumentErrorIfNeeded()
     }
 
     deinit {
@@ -76,46 +80,44 @@ final class WebViewController: UIViewController {
     }
 
     func receiveDocuments(_ sourceURLs: [URL]) {
-        var cachedURLs: [URL] = []
-        var failures: [String] = []
+        let fileURLs = sourceURLs.filter(\.isFileURL)
+        guard !fileURLs.isEmpty else { return }
 
-        for sourceURL in sourceURLs where sourceURL.isFileURL {
-            do {
-                cachedURLs.append(try cacheIncomingDocument(sourceURL))
-            } catch {
-                failures.append(sourceURL.lastPathComponent)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            var cachedURLs: [URL] = []
+            var failures: [String] = []
+
+            for sourceURL in fileURLs {
+                do {
+                    cachedURLs.append(try self.cacheIncomingDocument(
+                        sourceURL,
+                        preferredFilename: sourceURL.lastPathComponent
+                    ))
+                } catch {
+                    failures.append(sourceURL.lastPathComponent)
+                }
             }
-        }
 
-        guard !cachedURLs.isEmpty else {
-            if !failures.isEmpty {
-                presentDocumentError(
-                    message: "无法读取：\(failures.joined(separator: "、"))"
+            DispatchQueue.main.async { [weak self] in
+                self?.finishReceivingDocuments(
+                    cachedURLs,
+                    failedNames: failures
                 )
             }
-            return
         }
-
-        pendingDocumentURLs.append(contentsOf: cachedURLs)
-        automaticAttachmentAttemptCount = 0
-        shouldPresentDocumentNotice = false
-        attemptAutomaticDocumentAttachment()
     }
 
-    private func cacheIncomingDocument(_ sourceURL: URL) throws -> URL {
+    private func cacheIncomingDocument(
+        _ sourceURL: URL,
+        preferredFilename: String
+    ) throws -> URL {
         let fileManager = FileManager.default
         let didAccess = sourceURL.startAccessingSecurityScopedResource()
         defer {
             if didAccess {
                 sourceURL.stopAccessingSecurityScopedResource()
             }
-        }
-
-        let resourceValues = try sourceURL.resourceValues(
-            forKeys: [.isRegularFileKey]
-        )
-        guard resourceValues.isRegularFile == true else {
-            throw CocoaError(.fileReadUnsupportedScheme)
         }
 
         let rootDirectory = try fileManager.url(
@@ -132,15 +134,74 @@ final class WebViewController: UIViewController {
             withIntermediateDirectories: true
         )
 
-        let rawFilename = sourceURL.lastPathComponent.isEmpty
+        let rawFilename = preferredFilename.isEmpty
             ? "document"
-            : sourceURL.lastPathComponent
+            : preferredFilename
         let safeFilename = rawFilename
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ":", with: "_")
         let destination = rootDirectory.appendingPathComponent(safeFilename)
-        try fileManager.copyItem(at: sourceURL, to: destination)
+
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var copyError: Error?
+        var didCopy = false
+        coordinator.coordinate(
+            readingItemAt: sourceURL,
+            options: [.withoutChanges],
+            error: &coordinationError
+        ) { coordinatedURL in
+            do {
+                let values = try coordinatedURL.resourceValues(
+                    forKeys: [.isDirectoryKey]
+                )
+                guard values.isDirectory != true else {
+                    throw CocoaError(.fileReadUnsupportedScheme)
+                }
+                try fileManager.copyItem(
+                    at: coordinatedURL,
+                    to: destination
+                )
+                didCopy = true
+            } catch {
+                copyError = error
+            }
+        }
+
+        if let coordinationError {
+            try? fileManager.removeItem(at: rootDirectory)
+            throw coordinationError
+        }
+        if let copyError {
+            try? fileManager.removeItem(at: rootDirectory)
+            throw copyError
+        }
+        guard didCopy else {
+            try? fileManager.removeItem(at: rootDirectory)
+            throw CocoaError(.fileReadUnknown)
+        }
         return destination
+    }
+
+    private func finishReceivingDocuments(
+        _ cachedURLs: [URL],
+        failedNames: [String]
+    ) {
+        if !failedNames.isEmpty {
+            pendingDocumentErrorMessage =
+                "无法读取：\(failedNames.joined(separator: "、"))"
+        }
+
+        guard !cachedURLs.isEmpty else {
+            presentPendingDocumentErrorIfNeeded()
+            return
+        }
+
+        pendingDocumentURLs.append(contentsOf: cachedURLs)
+        automaticAttachmentAttemptCount = 0
+        shouldPresentDocumentNotice = false
+        attemptAutomaticDocumentAttachment()
+        presentPendingDocumentErrorIfNeeded()
     }
 
     private func removeExpiredIncomingDocuments() {
@@ -503,7 +564,12 @@ final class WebViewController: UIViewController {
     }
 
     private func presentDocumentError(message: String) {
-        guard isViewLoaded, view.window != nil else { return }
+        guard isViewLoaded,
+              view.window != nil,
+              presentedViewController == nil else {
+            pendingDocumentErrorMessage = message
+            return
+        }
         let alert = UIAlertController(
             title: "无法接收文件",
             message: message,
@@ -511,6 +577,17 @@ final class WebViewController: UIViewController {
         )
         alert.addAction(UIAlertAction(title: "好", style: .default))
         present(alert, animated: true)
+    }
+
+    private func presentPendingDocumentErrorIfNeeded() {
+        guard let message = pendingDocumentErrorMessage,
+              isViewLoaded,
+              view.window != nil,
+              presentedViewController == nil else {
+            return
+        }
+        pendingDocumentErrorMessage = nil
+        presentDocumentError(message: message)
     }
 
     private func makeWebView() -> WKWebView {
@@ -528,6 +605,11 @@ final class WebViewController: UIViewController {
         configuration.defaultWebpagePreferences = preferences
 
         let contentController = WKUserContentController()
+        contentController.addUserScript(WKUserScript(
+            source: Self.blockUnsafeWebFileDropScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        ))
         contentController.addUserScript(WKUserScript(
             source: Self.workRepairDotScript,
             injectionTime: .atDocumentEnd,
@@ -549,6 +631,59 @@ final class WebViewController: UIViewController {
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = true
         return webView
+    }
+
+    private func configureDocumentDropInteraction() {
+        if documentDropInteraction == nil {
+            documentDropInteraction = UIDropInteraction(delegate: self)
+        }
+        removeWebKitDropInteractions(from: webView)
+
+        guard let documentDropInteraction,
+              !webView.interactions.contains(where: {
+                  $0 === documentDropInteraction
+              }) else {
+            return
+        }
+        webView.addInteraction(documentDropInteraction)
+    }
+
+    private func removeWebKitDropInteractions(from rootView: UIView) {
+        for interaction in rootView.interactions {
+            guard let dropInteraction = interaction as? UIDropInteraction else {
+                continue
+            }
+            if let documentDropInteraction,
+               dropInteraction === documentDropInteraction {
+                continue
+            }
+            rootView.removeInteraction(dropInteraction)
+        }
+        rootView.subviews.forEach {
+            removeWebKitDropInteractions(from: $0)
+        }
+    }
+
+    private func loadableTypeIdentifier(
+        for provider: NSItemProvider
+    ) -> String? {
+        provider.registeredTypeIdentifiers.first { identifier in
+            guard let type = UTType(identifier) else { return false }
+            return type.conforms(to: .data)
+        }
+    }
+
+    private func preferredDropFilename(
+        provider: NSItemProvider,
+        temporaryURL: URL
+    ) -> String {
+        var filename = provider.suggestedName
+            ?? temporaryURL.lastPathComponent
+        if (filename as NSString).pathExtension.isEmpty,
+           !temporaryURL.pathExtension.isEmpty {
+            filename += ".\(temporaryURL.pathExtension)"
+        }
+        return filename
     }
 
     private func configureView() {
@@ -733,6 +868,50 @@ final class WebViewController: UIViewController {
         24 * 1_024 * 1_024
     private static let maximumAutomaticAttachmentAttempts = 10
     private static let javaScriptChunkLength = 128 * 1_024
+
+    private static let blockUnsafeWebFileDropScript = """
+    (function () {
+      if (window.__gptwebNativeFileDropInstalled) return;
+      window.__gptwebNativeFileDropInstalled = true;
+
+      function containsFiles(event) {
+        var transfer = event && event.dataTransfer;
+        if (!transfer) return false;
+
+        var items = transfer.items || [];
+        for (var itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+          if (items[itemIndex] && items[itemIndex].kind === 'file') {
+            return true;
+          }
+        }
+
+        var types = transfer.types || [];
+        for (var typeIndex = 0; typeIndex < types.length; typeIndex += 1) {
+          var type = String(types[typeIndex] || '').toLowerCase();
+          if (type === 'files' ||
+              type === 'public.file-url' ||
+              type === 'application/x-moz-file') {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function blockWebFileDrop(event) {
+        if (!containsFiles(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+          event.stopImmediatePropagation();
+        }
+      }
+
+      ['dragenter', 'dragover', 'drop'].forEach(function (eventName) {
+        window.addEventListener(eventName, blockWebFileDrop, true);
+        document.addEventListener(eventName, blockWebFileDrop, true);
+      });
+    })();
+    """
 
     private static let uploadInputAvailabilityScript = """
     (function () {
@@ -2329,6 +2508,7 @@ extension WebViewController: WKNavigationDelegate {
         lastLoadFailed = false
         recoveryAttempts.removeAll()
         persistCurrentURL()
+        configureDocumentDropInteraction()
         attemptAutomaticDocumentAttachment()
     }
 
@@ -2382,6 +2562,93 @@ extension WebViewController: WKNavigationDelegate {
         didBecome download: WKDownload
     ) {
         beginDownload(download)
+    }
+}
+
+extension WebViewController: UIDropInteractionDelegate {
+    func dropInteraction(
+        _ interaction: UIDropInteraction,
+        canHandle session: UIDropSession
+    ) -> Bool {
+        session.items.contains {
+            loadableTypeIdentifier(for: $0.itemProvider) != nil
+        }
+    }
+
+    func dropInteraction(
+        _ interaction: UIDropInteraction,
+        sessionDidUpdate session: UIDropSession
+    ) -> UIDropProposal {
+        UIDropProposal(
+            operation: dropInteraction(
+                interaction,
+                canHandle: session
+            ) ? .copy : .cancel
+        )
+    }
+
+    func dropInteraction(
+        _ interaction: UIDropInteraction,
+        performDrop session: UIDropSession
+    ) {
+        let providers = session.items.map(\.itemProvider)
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var cachedURLs: [URL] = []
+        var failedNames: [String] = []
+
+        for provider in providers {
+            guard let typeIdentifier = loadableTypeIdentifier(
+                for: provider
+            ) else {
+                continue
+            }
+
+            group.enter()
+            provider.loadFileRepresentation(
+                forTypeIdentifier: typeIdentifier
+            ) { [weak self] temporaryURL, _ in
+                defer { group.leave() }
+                guard let self, let temporaryURL else {
+                    lock.lock()
+                    failedNames.append(
+                        provider.suggestedName ?? "未知文件"
+                    )
+                    lock.unlock()
+                    return
+                }
+
+                do {
+                    let filename = self.preferredDropFilename(
+                        provider: provider,
+                        temporaryURL: temporaryURL
+                    )
+                    // NSItemProvider deletes this URL when the completion
+                    // handler returns, so it must be copied synchronously.
+                    let cachedURL = try self.cacheIncomingDocument(
+                        temporaryURL,
+                        preferredFilename: filename
+                    )
+                    lock.lock()
+                    cachedURLs.append(cachedURL)
+                    lock.unlock()
+                } catch {
+                    lock.lock()
+                    failedNames.append(
+                        provider.suggestedName
+                            ?? temporaryURL.lastPathComponent
+                    )
+                    lock.unlock()
+                }
+            }
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            self?.finishReceivingDocuments(
+                cachedURLs,
+                failedNames: failedNames
+            )
+        }
     }
 }
 

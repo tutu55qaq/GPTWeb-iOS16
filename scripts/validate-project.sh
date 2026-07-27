@@ -63,8 +63,8 @@ manifest = json.loads(
 )
 if manifest.get("manifest_version") != 2:
     raise SystemExit("Safari Extension 必须使用兼容 iOS 16 的 Manifest V2")
-if manifest.get("version") != "1.2.2":
-    raise SystemExit("Safari Extension 版本号不是 1.2.2")
+if manifest.get("version") != "1.2.3":
+    raise SystemExit("Safari Extension 版本号不是 1.2.3")
 content_scripts = manifest.get("content_scripts", [])
 if len(content_scripts) != 1:
     raise SystemExit("Safari Extension content_scripts 配置错误")
@@ -144,10 +144,10 @@ if "SAFARI_FIX_BUNDLE_IDENTIFIER = com.example.gptweb.safarifix" not in base_con
     raise SystemExit("Base.xcconfig 的 Safari 修复宿主 Bundle ID 不正确")
 if "PRODUCT_BUNDLE_IDENTIFIER = $(HOST_BUNDLE_IDENTIFIER)" not in base_config:
     raise SystemExit("主应用没有使用宿主 Bundle ID")
-if "MARKETING_VERSION = 1.2.2" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.2")
-if "CURRENT_PROJECT_VERSION = 9" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新构建号不是 9")
+if "MARKETING_VERSION = 1.2.3" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.3")
+if "CURRENT_PROJECT_VERSION = 10" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新构建号不是 10")
 if 'EXTRA_SETTINGS+=("HOST_BUNDLE_IDENTIFIER=$BUNDLE_ID")' not in build_script:
     raise SystemExit("自定义主应用 Bundle ID 没有传给 Xcode")
 if '"SAFARI_FIX_BUNDLE_IDENTIFIER=$SAFARI_FIX_BUNDLE_ID"' not in build_script:
@@ -203,6 +203,10 @@ for marker in (
     'value(forHTTPHeaderField: "Content-Disposition")',
     'isAttachment || !navigationResponse.canShowMIMEType ? .download : .allow',
     'input.files = transfer.files;',
+    'NSFileCoordinator(filePresenter: nil)',
+    'UIDropInteraction(delegate: self)',
+    'loadFileRepresentation',
+    'source: Self.blockUnsafeWebFileDropScript',
 ):
     if marker not in swift:
         raise SystemExit(f"WebViewController.swift 缺少回归标记：{marker}")

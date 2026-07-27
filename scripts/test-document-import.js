@@ -34,8 +34,12 @@ const availabilityScript = extractSwiftMultilineString(
 const finalizeScript = extractSwiftMultilineString(
   "finalizeIncomingUploadScript"
 );
+const dropBlockScript = extractSwiftMultilineString(
+  "blockUnsafeWebFileDropScript"
+);
 
 new Function("window", "document", "DataTransfer", "File", "Blob", availabilityScript);
+new Function("window", "document", dropBlockScript);
 new Function(
   "window",
   "document",
@@ -77,7 +81,24 @@ assert.match(sceneSource, /connectionOptions\.urlContexts/);
 assert.doesNotMatch(swiftSource, /WKOpenPanelParameters/);
 assert.match(availabilityScript, /composer.*plus|plus.*composer/);
 assert.match(swiftSource, /maximumAutomaticAttachmentBytes/);
+assert.match(swiftSource, /NSFileCoordinator\(filePresenter: nil\)/);
+assert.match(swiftSource, /options: \[\.withoutChanges\]/);
+assert.match(swiftSource, /UIDropInteraction\(delegate: self\)/);
+assert.match(swiftSource, /extension WebViewController: UIDropInteractionDelegate/);
+assert.match(swiftSource, /loadFileRepresentation/);
+assert.match(swiftSource, /source: Self\.blockUnsafeWebFileDropScript/);
+assert.match(swiftSource, /injectionTime: \.atDocumentStart/);
+for (const marker of [
+  "event.preventDefault()",
+  "event.stopImmediatePropagation()",
+  "'dragenter', 'dragover', 'drop'"
+]) {
+  assert.ok(
+    dropBlockScript.includes(marker),
+    `unsafe WebKit drop blocker is missing marker: ${marker}`
+  );
+}
 
 console.log(
-  "Document Open In and automatic attachment checks passed."
+  "Document Open In, native drop, and automatic attachment checks passed."
 );

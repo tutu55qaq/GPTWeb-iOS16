@@ -19,8 +19,12 @@ GPT 管理 GitHub 仓库并接管 GitHub Actions 云端编译、校验和发布 
 - WebContent 进程被系统终止后自动恢复，并对离线、超时和加载失败提供明确的重试界面。
 - 支持 ChatGPT 网页触发的文件下载、系统分享、文件上传、麦克风和摄像头授权。
 - 注册为 PDF、图片、音视频、文本和常见文档的“在 ChatGPT 中打开”目标。由其他 App
-  打开的文件会先复制到本应用缓存，再尝试通过网页真实的附件输入框直接加入当前
-  聊天；如果网页结构变化或文件较大，则回退到 ChatGPT 原生的文件选择流程。
+  或系统“文件”打开的文件会通过 `NSFileCoordinator` 从 File Provider/iCloud
+  协调读取并复制到本应用缓存，再尝试通过网页真实的附件输入框直接加入当前聊天；
+  如果网页结构变化或文件较大，则回退到 ChatGPT 原生的文件选择流程。
+- 接管从系统“文件”拖入应用的 `UIDropInteraction`，在
+  `NSItemProvider.loadFileRepresentation` 回调结束前复制系统临时文件，并阻止
+  文件继续进入 iOS 16 WebKit 容易崩溃的网页 HTML 拖放路径。
 - 输入区采用 16 pt 最小字号，避免聚焦编辑框时网页自动放大；交互控件启用
   `touch-action: manipulation`，减少误触延迟。
 - 保留 WebKit 原生惯性滚动，不接管页面的滚动手势；检测到 Work 嵌套对话的纵向
@@ -109,7 +113,7 @@ iOS 16.2 / TrollStore 2 下 Safari 扩展不出现在设置中的
 `GPTWeb-unsigned.ipa`，不要卸载旧版，这样应用数据容器、Cookie 和登录状态都会
 保留。
 
-1. 覆盖安装 1.2.2。
+1. 覆盖安装 1.2.3。
 2. 在 TrollStore 设置中执行 **Rebuild Icon Cache**。
 3. 结束多任务页面中旧的 ChatGPT 卡片，再重新打开应用。
 4. 如果多任务左上角仍是旧图标，执行一次 Respring；仍未刷新时再重启设备。
@@ -125,6 +129,15 @@ iOS 16.2 / TrollStore 2 下 Safari 扩展不出现在设置中的
 3. 选择 **ChatGPT**。
 4. 应用会把文件复制进自己的缓存，并尝试直接触发 ChatGPT 网页的附件输入事件。
    成功后，文件会像官方 App 一样直接出现在聊天输入区，等待你发送。
+
+1.2.3 针对系统“文件”增加了两条专用兼容路径。“在 ChatGPT 中打开”得到的 URL
+可能来自 iCloud 或第三方 File Provider，程序会先使用 `NSFileCoordinator` 完成
+协调读取，避免普通 `FileManager.copyItem` 在文件尚未下载或仍由提供器管理时直接
+失败。长按拖入则由原生 `UIDropInteraction` 接管，并在
+`loadFileRepresentation` 的完成回调返回前复制临时文件；Apple 明确规定该临时 URL
+会在回调结束后失效。网页层同时在 `document_start` 拦截文件
+`dragenter`/`dragover`/`drop`，避免 iOS 16 的 WKWebView 再进入截图中“添加任意内容”
+遮罩所对应的不稳定 HTML 拖放路径。两种入口复制完成后都复用同一套自动附件流程。
 
 为避免 iOS 16.3 WebKit 在处理大段 Base64 时占用过多内存，自动注入只处理总计不超过
 24 MiB 的文件。程序会主动尝试展开附件控件，并等待网页生成真实的文件输入框。文件
