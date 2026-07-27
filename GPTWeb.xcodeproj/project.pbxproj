@@ -15,7 +15,35 @@
 		110000000000000000000006 /* WebViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000006 /* WebViewController.swift */; };
 		110000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000008 /* Assets.xcassets */; };
 		110000000000000000000008 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000009 /* PrivacyInfo.xcprivacy */; };
+		110000000000000000000009 /* SafariWebExtensionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22000000000000000000000E /* SafariWebExtensionHandler.swift */; };
+		11000000000000000000000A /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000010 /* manifest.json */; };
+		11000000000000000000000B /* content.js in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000011 /* content.js */; };
+		11000000000000000000000C /* SafariExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 220000000000000000000012 /* SafariExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		CC0000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 990000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 550000000000000000000002;
+			remoteInfo = SafariExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		BB0000000000000000000001 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				11000000000000000000000C /* SafariExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		220000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -31,10 +59,22 @@
 		22000000000000000000000B /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		22000000000000000000000C /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		22000000000000000000000D /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		22000000000000000000000E /* SafariWebExtensionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafariWebExtensionHandler.swift; sourceTree = "<group>"; };
+		22000000000000000000000F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		220000000000000000000010 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = manifest.json; sourceTree = "<group>"; };
+		220000000000000000000011 /* content.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = content.js; sourceTree = "<group>"; };
+		220000000000000000000012 /* SafariExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SafariExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		330000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		330000000000000000000002 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -48,6 +88,7 @@
 			isa = PBXGroup;
 			children = (
 				440000000000000000000002 /* GPTWeb */,
+				440000000000000000000005 /* SafariExtension */,
 				440000000000000000000003 /* Configs */,
 				440000000000000000000004 /* Products */,
 			);
@@ -83,8 +124,28 @@
 			isa = PBXGroup;
 			children = (
 				22000000000000000000000A /* GPTWeb.app */,
+				220000000000000000000012 /* SafariExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		440000000000000000000005 /* SafariExtension */ = {
+			isa = PBXGroup;
+			children = (
+				22000000000000000000000E /* SafariWebExtensionHandler.swift */,
+				22000000000000000000000F /* Info.plist */,
+				440000000000000000000006 /* Resources */,
+			);
+			path = SafariExtension;
+			sourceTree = "<group>";
+		};
+		440000000000000000000006 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				220000000000000000000010 /* manifest.json */,
+				220000000000000000000011 /* content.js */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -97,15 +158,34 @@
 				770000000000000000000001 /* Sources */,
 				330000000000000000000001 /* Frameworks */,
 				880000000000000000000001 /* Resources */,
+				BB0000000000000000000001 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				DD0000000000000000000001 /* PBXTargetDependency */,
 			);
 			name = GPTWeb;
 			productName = GPTWeb;
 			productReference = 22000000000000000000000A /* GPTWeb.app */;
 			productType = "com.apple.product-type.application";
+		};
+		550000000000000000000002 /* SafariExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 660000000000000000000003 /* Build configuration list for PBXNativeTarget "SafariExtension" */;
+			buildPhases = (
+				770000000000000000000002 /* Sources */,
+				330000000000000000000002 /* Frameworks */,
+				880000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SafariExtension;
+			productName = SafariExtension;
+			productReference = 220000000000000000000012 /* SafariExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -118,6 +198,9 @@
 				LastUpgradeCheck = 1420;
 				TargetAttributes = {
 					550000000000000000000001 = {
+						CreatedOnToolsVersion = 14.2;
+					};
+					550000000000000000000002 = {
 						CreatedOnToolsVersion = 14.2;
 					};
 				};
@@ -136,6 +219,7 @@
 			projectRoot = "";
 			targets = (
 				550000000000000000000001 /* GPTWeb */,
+				550000000000000000000002 /* SafariExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -147,6 +231,15 @@
 			files = (
 				110000000000000000000007 /* Assets.xcassets in Resources */,
 				110000000000000000000008 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		880000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				11000000000000000000000A /* manifest.json in Resources */,
+				11000000000000000000000B /* content.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -166,7 +259,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		770000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				110000000000000000000009 /* SafariWebExtensionHandler.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		DD0000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 550000000000000000000002 /* SafariExtension */;
+			targetProxy = CC0000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		AA0000000000000000000001 /* Debug */ = {
@@ -231,6 +340,50 @@
 			};
 			name = Release;
 		};
+		AA0000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 22000000000000000000000C /* Debug.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = SafariExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(HOST_BUNDLE_IDENTIFIER).SafariExtension";
+				PRODUCT_MODULE_NAME = SafariExtension;
+				PRODUCT_NAME = SafariExtension;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 22000000000000000000000D /* Release.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = SafariExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(HOST_BUNDLE_IDENTIFIER).SafariExtension";
+				PRODUCT_MODULE_NAME = SafariExtension;
+				PRODUCT_NAME = SafariExtension;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -252,8 +405,16 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		660000000000000000000003 /* Build configuration list for PBXNativeTarget "SafariExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000005 /* Debug */,
+				AA0000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 	};
 	rootObject = 990000000000000000000001 /* Project object */;
 }
-

@@ -25,7 +25,7 @@ XCODE_ARGS=(
 )
 
 if [[ -n "${BUNDLE_ID:-}" ]]; then
-  XCODE_ARGS+=("PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID")
+  XCODE_ARGS+=("HOST_BUNDLE_IDENTIFIER=$BUNDLE_ID")
 fi
 
 mkdir -p "$BUILD_DIR"
@@ -49,4 +49,3 @@ mkdir -p "$STAGE_DIR/Payload"
 
 echo
 echo "未签名 IPA 已生成：$IPA_PATH"
-

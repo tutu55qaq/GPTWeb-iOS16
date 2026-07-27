@@ -1,0 +1,25 @@
+{
+  "manifest_version": 2,
+  "name": "ChatGPT Work 滚动修复",
+  "description": "在 iOS 16 Safari 的 ChatGPT Work 页面中重新激活原生嵌套滚动。",
+  "version": "1.2.0",
+  "permissions": [
+    "https://chatgpt.com/*",
+    "https://*.chatgpt.com/*",
+    "https://chat.openai.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://*.chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
+    }
+  ]
+}

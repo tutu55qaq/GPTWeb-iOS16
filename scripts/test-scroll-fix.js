@@ -40,6 +40,53 @@ assert.doesNotMatch(
   "the repair dot must never simulate scrolling"
 );
 
+const manifest = JSON.parse(fs.readFileSync(
+  path.join(
+    projectRoot,
+    "SafariExtension",
+    "Resources",
+    "manifest.json"
+  ),
+  "utf8"
+));
+assert.equal(manifest.manifest_version, 2);
+assert.equal(manifest.content_scripts.length, 1);
+assert.equal(manifest.content_scripts[0].all_frames, true);
+assert.equal(manifest.content_scripts[0].run_at, "document_end");
+assert.deepEqual(manifest.content_scripts[0].js, ["content.js"]);
+assert.ok(
+  manifest.content_scripts[0].matches.includes("https://chatgpt.com/*")
+);
+
+const safariScript = fs.readFileSync(
+  path.join(
+    projectRoot,
+    "SafariExtension",
+    "Resources",
+    "content.js"
+  ),
+  "utf8"
+);
+new Function("window", "document", "MutationObserver", safariScript);
+for (const marker of [
+  "gptweb-work-repair-dot",
+  "function repairScroller",
+  "data-gptweb-scroll-repaired",
+  "'overflow-y', 'auto', 'important'",
+  "'touch-action', 'pan-y', 'important'",
+  "}, 360);"
+]) {
+  assert.ok(
+    safariScript.includes(marker),
+    `Safari content script is missing marker: ${marker}`
+  );
+}
+assert.doesNotMatch(
+  safariScript,
+  /\.scrollTop\s*=/,
+  "the Safari extension must never simulate scrolling"
+);
+
 function makeElement({
   tagName = "DIV",
   parentElement = null,

@@ -1,9 +1,10 @@
 # ChatGPT WebView for iOS 16
 
-一个面向个人侧载的轻量级 `WKWebView` 客户端，默认打开
-`https://chatgpt.com/`。工程最低支持 iOS 16.0，并针对 iOS 16.3 与
-iPhone 13 Pro Max（428 pt 宽度、刘海安全区、底部 Home Indicator、120 Hz
-ProMotion）进行了适配。
+本项目主要解决 iPhone 13 Pro Max（iOS 16.3）访问 ChatGPT Work 时内部对话无法
+上下滑动、手势只让整个页面轻微回弹的问题，同时保留普通聊天的原生惯性滚动。它是
+一个最低支持 iOS 16.0 的个人侧载 `WKWebView` 客户端，并内置可作用于系统 Safari
+的 Web Extension。本项目完全由 GPT 在移动端对话中全程编写、调试与维护，由 GPT
+管理 GitHub 仓库并接管 GitHub Actions 云端编译、校验和发布 IPA。
 
 > 这是用于个人侧载的非官方 WebView 客户端，与 OpenAI 没有隶属或背书关系。
 > 应用显示名与图标取自官方 ChatGPT iOS 客户端，便于替代无法安装的官方客户端；
@@ -22,6 +23,8 @@ ProMotion）进行了适配。
 - 保留 WebKit 原生惯性滚动，不接管页面的滚动手势；检测到 Work 嵌套对话的纵向
   滑动后，右上角会短暂出现一个蓝色修复圆点。长按圆点会对当前容器执行一次局部
   修复，随后继续使用原生滑动与 iOS 原生滚动条，静止时圆点自动隐藏。
+- IPA 内嵌 `SafariExtension.appex`，在系统 Safari 获得 `chatgpt.com` 网站权限后，
+  会在主页面和子 Frame 中自动提供同一套 Work 滚动修复圆点。
 - 键盘可交互收起、返回手势、加载进度条、深色模式与 120 Hz 刷新率。
 - 不注入 API Key，不读取或上传对话文本，不拦截网络请求。滚动修复逻辑只检查元素的
   尺寸、滚动位置和父子关系。
@@ -52,6 +55,22 @@ BUNDLE_ID=com.yourname.gptweb ./scripts/build-ipa.sh
 
 使用 TrollStore 更新时保持相同的 Bundle ID 并直接覆盖安装，不要先卸载；这样可以
 沿用现有应用数据容器和 WebKit 登录状态。
+
+## 在 Safari 中启用滚动修复扩展
+
+Safari Web Extension 不能单独安装，已经作为 `SafariExtension.appex` 嵌入本项目
+生成的 IPA。安装 1.2.0 或更高版本后：
+
+1. 打开“设置 → Safari → 扩展”。
+2. 选择“ChatGPT Work 滚动修复”并启用。
+3. 将 `chatgpt.com` 的网站访问权限设为“允许”。
+4. 完全退出并重新打开 Safari，刷新已经打开的 ChatGPT 标签页。
+5. 进入 Work 对话并做一次纵向滑动；右上角圆点出现后长按约 360 ms，看到圆点
+   放大并出现光圈后松手。
+
+扩展使用 Safari 自己的 Cookie 与登录状态，不会读取或复制本应用 WebView 的 Cookie。
+它不拦截网络请求，只在 ChatGPT 页面中检查元素尺寸、滚动范围和父子关系，并为用户
+明确选中的容器写入滚动修复 CSS。
 
 ## 用 Xcode 构建
 
@@ -139,15 +158,15 @@ JavaScript/CSS 特性，也不能保证一定快于一个全新、无其他标�
 
 ### 能否在 iPhone 的 Safari 中使用
 
-可以使用同一思路，但本应用不能直接修改系统 Safari 中已经打开的网页。iOS 的应用
-沙盒把 `WKWebView` 和 Safari 标签页隔离，本应用注入的 `WKUserScript` 只对本应用
-自己的 WebView 生效。
+本应用的 `WKUserScript` 不能直接修改系统 Safari 中已经打开的网页。iOS 的应用
+沙盒把 `WKWebView` 和 Safari 标签页隔离，因此本项目同时提供了独立的
+Safari Web Extension，在用户授予网站权限后由 Safari 注入同一套修复逻辑。
 
 在 Safari 中有两种实现方式：
 
-- **推荐：Safari Web Extension。** iOS 15 起支持 Safari Web Extension。可以把
-  同一段修复逻辑作为只匹配 `https://chatgpt.com/*` 的 content script，在页面和
-  子 Frame 加载后自动注入。安装包含扩展的 App 后，需要在
+- **推荐：内置 Safari Web Extension。** iOS 15 起支持 Safari Web Extension。
+  本项目已经把同一段修复逻辑作为只匹配 `https://chatgpt.com/*` 的 content
+  script，在页面和子 Frame 加载后自动注入。安装包含扩展的 App 后，需要在
   “设置 → Safari → 扩展”中启用，并允许它访问 `chatgpt.com`。这是长期使用最可靠
   的方案，也能继续保持 Safari 自己的 Cookie、登录状态、下载和标签页功能。
 - **临时方案：JavaScript 书签。** 可以把简化后的修复函数保存为

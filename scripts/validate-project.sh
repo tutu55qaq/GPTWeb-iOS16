@@ -13,6 +13,10 @@ required_files=(
   "GPTWeb/Info.plist"
   "GPTWeb/PrivacyInfo.xcprivacy"
   "GPTWeb/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
+  "SafariExtension/Info.plist"
+  "SafariExtension/SafariWebExtensionHandler.swift"
+  "SafariExtension/Resources/manifest.json"
+  "SafariExtension/Resources/content.js"
 )
 
 for relative_path in "${required_files[@]}"; do
@@ -38,9 +42,35 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 
-for relative in ("GPTWeb/Info.plist", "GPTWeb/PrivacyInfo.xcprivacy"):
+for relative in (
+    "GPTWeb/Info.plist",
+    "GPTWeb/PrivacyInfo.xcprivacy",
+    "SafariExtension/Info.plist",
+):
     with (root / relative).open("rb") as handle:
         plistlib.load(handle)
+
+manifest = json.loads(
+    (root / "SafariExtension/Resources/manifest.json").read_text(
+        encoding="utf-8"
+    )
+)
+if manifest.get("manifest_version") != 2:
+    raise SystemExit("Safari Extension 必须使用兼容 iOS 16 的 Manifest V2")
+if manifest.get("version") != "1.2.0":
+    raise SystemExit("Safari Extension 版本号不是 1.2.0")
+content_scripts = manifest.get("content_scripts", [])
+if len(content_scripts) != 1:
+    raise SystemExit("Safari Extension content_scripts 配置错误")
+content_script = content_scripts[0]
+if content_script.get("js") != ["content.js"]:
+    raise SystemExit("Safari Extension 没有加载 content.js")
+if content_script.get("run_at") != "document_end":
+    raise SystemExit("Safari Extension 必须在 document_end 注入")
+if content_script.get("all_frames") is not True:
+    raise SystemExit("Safari Extension 必须覆盖 ChatGPT 子 Frame")
+if "https://chatgpt.com/*" not in content_script.get("matches", []):
+    raise SystemExit("Safari Extension 没有限定 chatgpt.com")
 
 catalogs = [
     root / "GPTWeb/Assets.xcassets/Contents.json",
@@ -83,19 +113,32 @@ if official_icon_sha256 != "25a0de01a71d3ba6c3e32b9a230d4d0c6cca296aabbfdd9d5379
 
 pbxproj = (root / "GPTWeb.xcodeproj/project.pbxproj").read_text(encoding="utf-8")
 base_config = (root / "Configs/Base.xcconfig").read_text(encoding="utf-8")
+build_script = (root / "scripts/build-ipa.sh").read_text(encoding="utf-8")
 for marker in (
     "WebViewController.swift",
     "PrivacyInfo.xcprivacy",
     "Assets.xcassets",
+    "SafariExtension.appex",
+    "SafariWebExtensionHandler.swift",
+    "manifest.json in Resources",
+    "content.js in Resources",
+    "Embed App Extensions",
+    "com.apple.product-type.app-extension",
 ):
     if marker not in pbxproj:
         raise SystemExit(f"project.pbxproj 缺少标记：{marker}")
 if "IPHONEOS_DEPLOYMENT_TARGET = 16.0" not in base_config:
     raise SystemExit("Base.xcconfig 的最低系统版本不是 iOS 16.0")
-if "MARKETING_VERSION = 1.1.1" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新版本号不是 1.1.1")
-if "CURRENT_PROJECT_VERSION = 6" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新构建号不是 6")
+if "HOST_BUNDLE_IDENTIFIER = com.example.gptweb" not in base_config:
+    raise SystemExit("Base.xcconfig 的宿主 Bundle ID 不正确")
+if "PRODUCT_BUNDLE_IDENTIFIER = $(HOST_BUNDLE_IDENTIFIER)" not in base_config:
+    raise SystemExit("主应用没有使用宿主 Bundle ID")
+if "MARKETING_VERSION = 1.2.0" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.0")
+if "CURRENT_PROJECT_VERSION = 7" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新构建号不是 7")
+if 'XCODE_ARGS+=("HOST_BUNDLE_IDENTIFIER=$BUNDLE_ID")' not in build_script:
+    raise SystemExit("自定义 Bundle ID 没有同时传递给宿主与 Safari Extension")
 
 info = plistlib.loads((root / "GPTWeb/Info.plist").read_bytes())
 if info.get("NSAppTransportSecurity", {}).get("NSAllowsArbitraryLoads") is not False:
@@ -104,6 +147,15 @@ if info.get("CFBundleDisplayName") != "ChatGPT":
     raise SystemExit("应用显示名不是 ChatGPT")
 if info.get("CFBundleName") != "ChatGPT":
     raise SystemExit("应用名称不是 ChatGPT")
+
+extension_info = plistlib.loads(
+    (root / "SafariExtension/Info.plist").read_bytes()
+)
+extension = extension_info.get("NSExtension", {})
+if extension.get("NSExtensionPointIdentifier") != "com.apple.Safari.web-extension":
+    raise SystemExit("Safari Extension Point 配置错误")
+if extension_info.get("CFBundleDisplayName") != "ChatGPT Work 滚动修复":
+    raise SystemExit("Safari Extension 显示名称不正确")
 
 swift = (root / "GPTWeb/WebViewController.swift").read_text(encoding="utf-8")
 for marker in (
@@ -116,7 +168,7 @@ for marker in (
     if marker not in swift:
         raise SystemExit(f"WebViewController.swift 缺少回归标记：{marker}")
 
-print("Plist、Asset Catalog 和工程引用检查通过。")
+print("Plist、Safari Extension、Asset Catalog 和工程引用检查通过。")
 PY
 
 echo "静态检查全部通过。"
