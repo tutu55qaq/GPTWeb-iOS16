@@ -1,10 +1,18 @@
 import SafariServices
 import UIKit
+import UniformTypeIdentifiers
 import WebKit
 
 final class WebViewController: UIViewController {
     private enum Keys {
         static let lastURL = "GPTWeb.lastFirstPartyURL"
+    }
+
+    private struct PreparedIncomingDocument {
+        let sourceURL: URL
+        let filename: String
+        let mimeType: String
+        let base64Chunks: [String]
     }
 
     private lazy var webView: WKWebView = makeWebView()
@@ -17,13 +25,25 @@ final class WebViewController: UIViewController {
     private var lastLoadFailed = false
     private var recoveryAttempts: [Date] = []
     private var downloadDestinations: [ObjectIdentifier: URL] = [:]
+    private var pendingDocumentURLs: [URL] = []
+    private var shouldPresentDocumentNotice = false
+    private var openPanelCompletion: (([URL]?) -> Void)?
+    private var isAutomaticallyAttachingDocuments = false
+    private var automaticAttachmentAttemptCount = 0
 
     override func viewDidLoad() {
         super.viewDidLoad()
         configureView()
         configureObservers()
         configureConnectivity()
+        removeExpiredIncomingDocuments()
         loadInitialPage()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        attemptAutomaticDocumentAttachment()
+        presentIncomingDocumentNoticeIfNeeded()
     }
 
     deinit {
@@ -43,6 +63,8 @@ final class WebViewController: UIViewController {
             loadInitialPage()
         } else if lastLoadFailed && isConnected {
             reloadCurrentPage()
+        } else {
+            attemptAutomaticDocumentAttachment()
         }
     }
 
@@ -52,6 +74,444 @@ final class WebViewController: UIViewController {
             "document.querySelectorAll('video,audio').forEach(function(media){ media.pause(); });",
             completionHandler: nil
         )
+    }
+
+    func receiveDocuments(_ sourceURLs: [URL]) {
+        var cachedURLs: [URL] = []
+        var failures: [String] = []
+
+        for sourceURL in sourceURLs where sourceURL.isFileURL {
+            do {
+                cachedURLs.append(try cacheIncomingDocument(sourceURL))
+            } catch {
+                failures.append(sourceURL.lastPathComponent)
+            }
+        }
+
+        guard !cachedURLs.isEmpty else {
+            if !failures.isEmpty {
+                presentDocumentError(
+                    message: "无法读取：\(failures.joined(separator: "、"))"
+                )
+            }
+            return
+        }
+
+        pendingDocumentURLs.append(contentsOf: cachedURLs)
+        automaticAttachmentAttemptCount = 0
+        shouldPresentDocumentNotice = false
+        attemptAutomaticDocumentAttachment()
+    }
+
+    private func cacheIncomingDocument(_ sourceURL: URL) throws -> URL {
+        let fileManager = FileManager.default
+        let didAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let resourceValues = try sourceURL.resourceValues(
+            forKeys: [.isRegularFileKey]
+        )
+        guard resourceValues.isRegularFile == true else {
+            throw CocoaError(.fileReadUnsupportedScheme)
+        }
+
+        let rootDirectory = try fileManager.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        .appendingPathComponent("IncomingDocuments", isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+
+        try fileManager.createDirectory(
+            at: rootDirectory,
+            withIntermediateDirectories: true
+        )
+
+        let rawFilename = sourceURL.lastPathComponent.isEmpty
+            ? "document"
+            : sourceURL.lastPathComponent
+        let safeFilename = rawFilename
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        let destination = rootDirectory.appendingPathComponent(safeFilename)
+        try fileManager.copyItem(at: sourceURL, to: destination)
+        return destination
+    }
+
+    private func removeExpiredIncomingDocuments() {
+        let fileManager = FileManager.default
+        guard let cachesDirectory = try? fileManager.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) else {
+            return
+        }
+
+        let rootDirectory = cachesDirectory.appendingPathComponent(
+            "IncomingDocuments",
+            isDirectory: true
+        )
+        guard let directories = try? fileManager.contentsOfDirectory(
+            at: rootDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        let expirationDate = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+        for directory in directories {
+            let values = try? directory.resourceValues(
+                forKeys: [.contentModificationDateKey]
+            )
+            guard let modified = values?.contentModificationDate,
+                  modified < expirationDate else {
+                continue
+            }
+            try? fileManager.removeItem(at: directory)
+        }
+    }
+
+    private func attemptAutomaticDocumentAttachment() {
+        guard !pendingDocumentURLs.isEmpty,
+              !isAutomaticallyAttachingDocuments,
+              isViewLoaded,
+              view.window != nil,
+              !webView.isLoading,
+              isChatGPTPage(webView.url) else {
+            return
+        }
+
+        let sourceURLs = pendingDocumentURLs
+        let totalSize = sourceURLs.reduce(Int64(0)) { partialResult, url in
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+            return partialResult + Int64(values?.fileSize ?? 0)
+        }
+        guard totalSize > 0,
+              totalSize <= Self.maximumAutomaticAttachmentBytes else {
+            useManualAttachmentFallback()
+            return
+        }
+
+        isAutomaticallyAttachingDocuments = true
+        webView.evaluateJavaScript(Self.uploadInputAvailabilityScript) {
+            [weak self] value, error in
+            guard let self else { return }
+            guard error == nil, (value as? Bool) == true else {
+                self.isAutomaticallyAttachingDocuments = false
+                self.scheduleAutomaticAttachmentRetry()
+                return
+            }
+            self.prepareIncomingDocuments(
+                sourceURLs,
+                totalSize: totalSize
+            )
+        }
+    }
+
+    private func prepareIncomingDocuments(
+        _ sourceURLs: [URL],
+        totalSize: Int64
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+
+            do {
+                let payloads = try sourceURLs.map { sourceURL in
+                    let data = try Data(
+                        contentsOf: sourceURL,
+                        options: [.mappedIfSafe]
+                    )
+                    let base64 = data.base64EncodedString() as NSString
+                    var chunks: [String] = []
+                    var location = 0
+                    while location < base64.length {
+                        let length = min(
+                            Self.javaScriptChunkLength,
+                            base64.length - location
+                        )
+                        chunks.append(base64.substring(
+                            with: NSRange(location: location, length: length)
+                        ))
+                        location += length
+                    }
+
+                    let mimeType = UTType(
+                        filenameExtension: sourceURL.pathExtension
+                    )?.preferredMIMEType ?? "application/octet-stream"
+                    return PreparedIncomingDocument(
+                        sourceURL: sourceURL,
+                        filename: sourceURL.lastPathComponent,
+                        mimeType: mimeType,
+                        base64Chunks: chunks
+                    )
+                }
+
+                DispatchQueue.main.async { [weak self] in
+                    self?.beginJavaScriptDocumentTransfer(
+                        payloads,
+                        totalSize: totalSize
+                    )
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.automaticAttachmentFailed()
+                }
+            }
+        }
+    }
+
+    private func beginJavaScriptDocumentTransfer(
+        _ payloads: [PreparedIncomingDocument],
+        totalSize: Int64
+    ) {
+        guard payloads.allSatisfy({
+            pendingDocumentURLs.contains($0.sourceURL)
+        }) else {
+            isAutomaticallyAttachingDocuments = false
+            return
+        }
+
+        let metadata = payloads.map {
+            [
+                "name": $0.filename,
+                "type": $0.mimeType,
+                "chunks": []
+            ] as [String: Any]
+        }
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: metadata
+        ), let json = String(data: data, encoding: .utf8) else {
+            automaticAttachmentFailed()
+            return
+        }
+
+        let script = """
+        window.__gptwebIncomingUpload = {
+          files: \(json),
+          byteLength: \(totalSize)
+        };
+        true;
+        """
+        webView.evaluateJavaScript(script) { [weak self] _, error in
+            guard let self else { return }
+            guard error == nil else {
+                self.automaticAttachmentFailed()
+                return
+            }
+            self.sendJavaScriptDocumentChunk(
+                payloads,
+                fileIndex: 0,
+                chunkIndex: 0
+            )
+        }
+    }
+
+    private func sendJavaScriptDocumentChunk(
+        _ payloads: [PreparedIncomingDocument],
+        fileIndex: Int,
+        chunkIndex: Int
+    ) {
+        guard payloads.allSatisfy({
+            pendingDocumentURLs.contains($0.sourceURL)
+        }) else {
+            isAutomaticallyAttachingDocuments = false
+            webView.evaluateJavaScript(
+                "delete window.__gptwebIncomingUpload;",
+                completionHandler: nil
+            )
+            return
+        }
+
+        guard fileIndex < payloads.count else {
+            finalizeJavaScriptDocumentTransfer(payloads)
+            return
+        }
+
+        let chunks = payloads[fileIndex].base64Chunks
+        guard chunkIndex < chunks.count else {
+            sendJavaScriptDocumentChunk(
+                payloads,
+                fileIndex: fileIndex + 1,
+                chunkIndex: 0
+            )
+            return
+        }
+
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: [chunks[chunkIndex]]
+        ), let jsonArray = String(data: data, encoding: .utf8) else {
+            automaticAttachmentFailed()
+            return
+        }
+        let script = """
+        window.__gptwebIncomingUpload.files[\(fileIndex)].chunks.push(
+          \(jsonArray)[0]
+        );
+        true;
+        """
+        webView.evaluateJavaScript(script) { [weak self] _, error in
+            guard let self else { return }
+            guard error == nil else {
+                self.automaticAttachmentFailed()
+                return
+            }
+            self.sendJavaScriptDocumentChunk(
+                payloads,
+                fileIndex: fileIndex,
+                chunkIndex: chunkIndex + 1
+            )
+        }
+    }
+
+    private func finalizeJavaScriptDocumentTransfer(
+        _ payloads: [PreparedIncomingDocument]
+    ) {
+        guard payloads.allSatisfy({
+            pendingDocumentURLs.contains($0.sourceURL)
+        }) else {
+            isAutomaticallyAttachingDocuments = false
+            webView.evaluateJavaScript(
+                "delete window.__gptwebIncomingUpload;",
+                completionHandler: nil
+            )
+            return
+        }
+
+        webView.evaluateJavaScript(Self.finalizeIncomingUploadScript) {
+            [weak self] value, error in
+            guard let self else { return }
+            let result = value as? [String: Any]
+            let succeeded = result?["success"] as? Bool ?? false
+            guard error == nil, succeeded else {
+                self.automaticAttachmentFailed()
+                return
+            }
+            self.automaticAttachmentSucceeded(
+                payloads.map(\.sourceURL)
+            )
+        }
+    }
+
+    private func automaticAttachmentSucceeded(_ attachedURLs: [URL]) {
+        let attachedSet = Set(attachedURLs)
+        pendingDocumentURLs.removeAll { attachedSet.contains($0) }
+        isAutomaticallyAttachingDocuments = false
+        automaticAttachmentAttemptCount = 0
+        shouldPresentDocumentNotice = false
+
+        let directories = Set(attachedURLs.map {
+            $0.deletingLastPathComponent()
+        })
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + 30
+        ) {
+            directories.forEach {
+                try? FileManager.default.removeItem(at: $0)
+            }
+        }
+
+        if !pendingDocumentURLs.isEmpty {
+            attemptAutomaticDocumentAttachment()
+        }
+    }
+
+    private func automaticAttachmentFailed() {
+        isAutomaticallyAttachingDocuments = false
+        webView.evaluateJavaScript(
+            "delete window.__gptwebIncomingUpload;",
+            completionHandler: nil
+        )
+        scheduleAutomaticAttachmentRetry()
+    }
+
+    private func scheduleAutomaticAttachmentRetry() {
+        guard !pendingDocumentURLs.isEmpty else { return }
+        automaticAttachmentAttemptCount += 1
+        guard automaticAttachmentAttemptCount <
+                Self.maximumAutomaticAttachmentAttempts else {
+            useManualAttachmentFallback()
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            [weak self] in
+            self?.attemptAutomaticDocumentAttachment()
+        }
+    }
+
+    private func useManualAttachmentFallback() {
+        isAutomaticallyAttachingDocuments = false
+        shouldPresentDocumentNotice = true
+        presentIncomingDocumentNoticeIfNeeded()
+    }
+
+    private func isChatGPTPage(_ url: URL?) -> Bool {
+        guard let host = url?.host?.lowercased() else { return false }
+        return host == "chatgpt.com" ||
+            host.hasSuffix(".chatgpt.com") ||
+            host == "chat.openai.com"
+    }
+
+    private func presentIncomingDocumentNoticeIfNeeded() {
+        guard shouldPresentDocumentNotice,
+              isViewLoaded,
+              view.window != nil,
+              presentedViewController == nil,
+              !pendingDocumentURLs.isEmpty else {
+            return
+        }
+
+        shouldPresentDocumentNotice = false
+        let names = pendingDocumentURLs.map(\.lastPathComponent)
+        let summary: String
+        if names.count == 1 {
+            summary = "已接收“\(names[0])”。"
+        } else {
+            summary = "已接收 \(names.count) 个文件。"
+        }
+
+        let alert = UIAlertController(
+            title: "自动加入未完成",
+            message: summary +
+                "\n\n请在 ChatGPT 输入框旁点击“+”并选择上传文件，" +
+                "程序会直接使用刚才的文件，不会再打开文件选择器。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消文件", style: .destructive) {
+            [weak self] _ in
+            self?.discardPendingDocuments()
+        })
+        alert.addAction(UIAlertAction(title: "继续", style: .default))
+        present(alert, animated: true)
+    }
+
+    private func discardPendingDocuments() {
+        let fileManager = FileManager.default
+        let directories = Set(pendingDocumentURLs.map {
+            $0.deletingLastPathComponent()
+        })
+        pendingDocumentURLs.removeAll()
+        directories.forEach { try? fileManager.removeItem(at: $0) }
+    }
+
+    private func presentDocumentError(message: String) {
+        guard isViewLoaded, view.window != nil else { return }
+        let alert = UIAlertController(
+            title: "无法接收文件",
+            message: message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
     }
 
     private func makeWebView() -> WKWebView {
@@ -269,6 +729,105 @@ final class WebViewController: UIViewController {
         "Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) " +
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 " +
         "Mobile/15E148 Safari/604.1"
+
+    private static let maximumAutomaticAttachmentBytes: Int64 =
+        24 * 1_024 * 1_024
+    private static let maximumAutomaticAttachmentAttempts = 10
+    private static let javaScriptChunkLength = 128 * 1_024
+
+    private static let uploadInputAvailabilityScript = """
+    (function () {
+      if (typeof DataTransfer !== 'function' ||
+          typeof File !== 'function' ||
+          typeof Blob !== 'function') {
+        return false;
+      }
+      return Array.prototype.some.call(
+        document.querySelectorAll('input[type="file"]'),
+        function (input) {
+          return !input.disabled;
+        }
+      );
+    })();
+    """
+
+    private static let finalizeIncomingUploadScript = """
+    (function () {
+      var state = window.__gptwebIncomingUpload;
+      if (!state || !state.files || !state.files.length) {
+        return { success: false, reason: 'missing-state' };
+      }
+
+      var inputs = Array.prototype.slice.call(
+        document.querySelectorAll('input[type="file"]')
+      ).filter(function (input) {
+        return !input.disabled;
+      });
+      if (!inputs.length) {
+        delete window.__gptwebIncomingUpload;
+        return { success: false, reason: 'missing-input' };
+      }
+
+      inputs.sort(function (left, right) {
+        function score(input) {
+          var value = [
+            input.name || '',
+            input.id || '',
+            input.getAttribute('aria-label') || '',
+            input.getAttribute('data-testid') || '',
+            input.accept || ''
+          ].join(' ').toLowerCase();
+          var result = input.multiple ? 40 : 0;
+          if (input.closest && input.closest('main')) result += 30;
+          if (/upload|attach|file/.test(value)) result += 80;
+          return result;
+        }
+        return score(right) - score(left);
+      });
+
+      try {
+        var transfer = new DataTransfer();
+        state.files.forEach(function (entry) {
+          var binary = window.atob(entry.chunks.join(''));
+          var bytes = new Uint8Array(binary.length);
+          for (var index = 0; index < binary.length; index += 1) {
+            bytes[index] = binary.charCodeAt(index);
+          }
+          var blob = new Blob([bytes], {
+            type: entry.type || 'application/octet-stream'
+          });
+          transfer.items.add(new File([blob], entry.name, {
+            type: entry.type || 'application/octet-stream',
+            lastModified: Date.now()
+          }));
+        });
+
+        var input = inputs[0];
+        if (!input.multiple && transfer.files.length > 1) {
+          delete window.__gptwebIncomingUpload;
+          return { success: false, reason: 'single-file-input' };
+        }
+        input.files = transfer.files;
+        input.dispatchEvent(new Event('input', {
+          bubbles: true,
+          composed: true
+        }));
+        input.dispatchEvent(new Event('change', {
+          bubbles: true,
+          composed: true
+        }));
+        var count = transfer.files.length;
+        delete window.__gptwebIncomingUpload;
+        return { success: true, count: count };
+      } catch (error) {
+        delete window.__gptwebIncomingUpload;
+        return {
+          success: false,
+          reason: String(error && error.message || error)
+        };
+      }
+    })();
+    """
 
     private static let compatibilityScript = """
     (function () {
@@ -1744,6 +2303,7 @@ extension WebViewController: WKNavigationDelegate {
         lastLoadFailed = false
         recoveryAttempts.removeAll()
         persistCurrentURL()
+        attemptAutomaticDocumentAttachment()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -1823,6 +2383,47 @@ extension WebViewController: WKUIDelegate {
 
     func webView(
         _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        if !pendingDocumentURLs.isEmpty {
+            let selectedURLs: [URL]
+            if parameters.allowsMultipleSelection {
+                selectedURLs = pendingDocumentURLs
+                pendingDocumentURLs.removeAll()
+            } else {
+                selectedURLs = [pendingDocumentURLs.removeFirst()]
+            }
+
+            isAutomaticallyAttachingDocuments = false
+            automaticAttachmentAttemptCount = 0
+            shouldPresentDocumentNotice = false
+            webView.evaluateJavaScript(
+                "delete window.__gptwebIncomingUpload;",
+                completionHandler: nil
+            )
+            completionHandler(selectedURLs)
+            return
+        }
+
+        guard openPanelCompletion == nil else {
+            completionHandler(nil)
+            return
+        }
+
+        openPanelCompletion = completionHandler
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.item],
+            asCopy: true
+        )
+        picker.delegate = self
+        picker.allowsMultipleSelection = parameters.allowsMultipleSelection
+        present(picker, animated: true)
+    }
+
+    func webView(
+        _ webView: WKWebView,
         requestMediaCapturePermissionFor origin: WKSecurityOrigin,
         initiatedByFrame frame: WKFrameInfo,
         type: WKMediaCaptureType,
@@ -1870,6 +2471,25 @@ extension WebViewController: WKUIDelegate {
             completionHandler(alert.textFields?.first?.text)
         })
         present(alert, animated: true)
+    }
+}
+
+extension WebViewController: UIDocumentPickerDelegate {
+    func documentPicker(
+        _ controller: UIDocumentPickerViewController,
+        didPickDocumentsAt urls: [URL]
+    ) {
+        let completion = openPanelCompletion
+        openPanelCompletion = nil
+        completion?(urls)
+    }
+
+    func documentPickerWasCancelled(
+        _ controller: UIDocumentPickerViewController
+    ) {
+        let completion = openPanelCompletion
+        openPanelCompletion = nil
+        completion?(nil)
     }
 }
 

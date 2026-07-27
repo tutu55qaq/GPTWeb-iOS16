@@ -18,6 +18,9 @@ GPT 管理 GitHub 仓库并接管 GitHub Actions 云端编译、校验和发布 
   `SFSafariViewController` 中打开。
 - WebContent 进程被系统终止后自动恢复，并对离线、超时和加载失败提供明确的重试界面。
 - 支持 ChatGPT 网页触发的文件下载、系统分享、文件上传、麦克风和摄像头授权。
+- 注册为 PDF、图片、音视频、文本和常见文档的“在 ChatGPT 中打开”目标。由其他 App
+  打开的文件会先复制到本应用缓存，再尝试通过网页真实的附件输入框直接加入当前
+  聊天；如果网页结构变化或文件较大，点一次 ChatGPT 的“+”即可直接使用已接收文件。
 - 输入区采用 16 pt 最小字号，避免聚焦编辑框时网页自动放大；交互控件启用
   `touch-action: manipulation`，减少误触延迟。
 - 保留 WebKit 原生惯性滚动，不接管页面的滚动手势；检测到 Work 嵌套对话的纵向
@@ -106,14 +109,33 @@ iOS 16.2 / TrollStore 2 下 Safari 扩展不出现在设置中的
 `GPTWeb-unsigned.ipa`，不要卸载旧版，这样应用数据容器、Cookie 和登录状态都会
 保留。
 
-1. 覆盖安装 1.2.1。
+1. 覆盖安装 1.2.2。
 2. 在 TrollStore 设置中执行 **Rebuild Icon Cache**。
 3. 结束多任务页面中旧的 ChatGPT 卡片，再重新打开应用。
 4. 如果多任务左上角仍是旧图标，执行一次 Respring；仍未刷新时再重启设备。
 
-1.2.1 把 Asset Catalog 的图标集缓存键从 `AppIcon` 改为 `ChatGPTIcon`，同时显式
+1.2.1 起把 Asset Catalog 的图标集缓存键从 `AppIcon` 改为 `ChatGPTIcon`，同时显式
 写入 `CFBundleIconName`。这会让新构建引用新的图标记录；但 iOS 的 SpringBoard 和
 多任务快照仍可能保留旧缓存，所以覆盖安装后仍需要执行上面的缓存刷新。
+
+## 从其他 App 直接加入文件
+
+1. 在“文件”、邮件、网盘或 PDF 阅读器中选择文件。
+2. 选择“在其他应用中打开”或系统分享菜单中的“打开方式”。
+3. 选择 **ChatGPT**。
+4. 应用会把文件复制进自己的缓存，并尝试直接触发 ChatGPT 网页的附件输入事件。
+   成功后，文件会像官方 App 一样直接出现在聊天输入区，等待你发送。
+
+为避免 iOS 16.3 WebKit 在处理大段 Base64 时占用过多内存，自动注入只处理总计不超过
+24 MiB 的文件。文件较大、网页尚未生成附件输入框，或 ChatGPT 后续修改了 DOM 时，
+应用会显示提示；这时只需点击网页输入框旁的“+”并选择上传文件，程序会把刚才收到的
+文件直接交给网页，不再打开系统文件选择器。普通情况下从网页主动点击“+”仍会打开
+标准系统文件选择器。
+
+这个入口使用 iOS 原生 `CFBundleDocumentTypes` 和
+`scene(_:openURLContexts:)`，不依赖 Share Extension，因此比 TrollStore 下注册额外
+扩展更可靠。覆盖安装后如果“打开方式”里暂时没有 ChatGPT，请在 TrollStore 中执行
+**Rebuild Icon Cache** 并 Respring 一次。
 
 ## 用 Xcode 构建
 

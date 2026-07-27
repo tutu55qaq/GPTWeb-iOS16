@@ -24,6 +24,18 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         self.browserController = browserController
         self.window = window
+
+        let incomingURLs = connectionOptions.urlContexts.map(\.url)
+        if !incomingURLs.isEmpty {
+            browserController.receiveDocuments(Array(incomingURLs))
+        }
+    }
+
+    func scene(
+        _ scene: UIScene,
+        openURLContexts URLContexts: Set<UIOpenURLContext>
+    ) {
+        browserController?.receiveDocuments(URLContexts.map(\.url))
     }
 
     func sceneWillEnterForeground(_ scene: UIScene) {
@@ -34,4 +46,3 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         browserController?.prepareForBackground()
     }
 }
-
