@@ -92,10 +92,10 @@ for marker in (
         raise SystemExit(f"project.pbxproj 缺少标记：{marker}")
 if "IPHONEOS_DEPLOYMENT_TARGET = 16.0" not in base_config:
     raise SystemExit("Base.xcconfig 的最低系统版本不是 iOS 16.0")
-if "MARKETING_VERSION = 1.1.0" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新版本号不是 1.1.0")
-if "CURRENT_PROJECT_VERSION = 5" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新构建号不是 5")
+if "MARKETING_VERSION = 1.1.1" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新版本号不是 1.1.1")
+if "CURRENT_PROJECT_VERSION = 6" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新构建号不是 6")
 
 info = plistlib.loads((root / "GPTWeb/Info.plist").read_bytes())
 if info.get("NSAppTransportSecurity", {}).get("NSAllowsArbitraryLoads") is not False:
@@ -107,7 +107,8 @@ if info.get("CFBundleName") != "ChatGPT":
 
 swift = (root / "GPTWeb/WebViewController.swift").read_text(encoding="utf-8")
 for marker in (
-    'source: Self.scrollbarScript',
+    'source: Self.workRepairDotScript',
+    'data-gptweb-scroll-repaired',
     'nsError.domain == "WebKitErrorDomain" && nsError.code == 102',
     'value(forHTTPHeaderField: "Content-Disposition")',
     'isAttachment || !navigationResponse.canShowMIMEType ? .download : .allow',
