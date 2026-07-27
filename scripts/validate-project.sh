@@ -202,7 +202,6 @@ for marker in (
     'nsError.domain == "WebKitErrorDomain" && nsError.code == 102',
     'value(forHTTPHeaderField: "Content-Disposition")',
     'isAttachment || !navigationResponse.canShowMIMEType ? .download : .allow',
-    'runOpenPanelWith parameters: WKOpenPanelParameters',
     'input.files = transfer.files;',
 ):
     if marker not in swift:

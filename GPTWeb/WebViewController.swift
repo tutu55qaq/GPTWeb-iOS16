@@ -27,7 +27,6 @@ final class WebViewController: UIViewController {
     private var downloadDestinations: [ObjectIdentifier: URL] = [:]
     private var pendingDocumentURLs: [URL] = []
     private var shouldPresentDocumentNotice = false
-    private var openPanelCompletion: (([URL]?) -> Void)?
     private var isAutomaticallyAttachingDocuments = false
     private var automaticAttachmentAttemptCount = 0
 
@@ -482,8 +481,8 @@ final class WebViewController: UIViewController {
         let alert = UIAlertController(
             title: "自动加入未完成",
             message: summary +
-                "\n\n请在 ChatGPT 输入框旁点击“+”并选择上传文件，" +
-                "程序会直接使用刚才的文件，不会再打开文件选择器。",
+                "\n\niOS 16 的 WebKit 没有开放替换文件选择器的接口。" +
+                "请在 ChatGPT 输入框旁点击“+”，再从原位置选择这个文件。",
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "取消文件", style: .destructive) {
@@ -742,12 +741,39 @@ final class WebViewController: UIViewController {
           typeof Blob !== 'function') {
         return false;
       }
-      return Array.prototype.some.call(
+      var hasInput = Array.prototype.some.call(
         document.querySelectorAll('input[type="file"]'),
         function (input) {
           return !input.disabled;
         }
       );
+      if (hasInput) return true;
+
+      var controls = Array.prototype.slice.call(
+        document.querySelectorAll(
+          'button,[role="button"],[role="menuitem"]'
+        )
+      );
+      var scored = controls.map(function (control) {
+        var value = [
+          control.getAttribute('aria-label') || '',
+          control.getAttribute('data-testid') || '',
+          control.textContent || ''
+        ].join(' ').toLowerCase();
+        var score = 0;
+        if (/upload|attach|file|上传|附件/.test(value)) score += 100;
+        if (/composer.*plus|plus.*composer/.test(value)) score += 70;
+        return { control: control, score: score };
+      }).filter(function (entry) {
+        return entry.score > 0 && !entry.control.disabled;
+      }).sort(function (left, right) {
+        return right.score - left.score;
+      });
+
+      if (scored.length) {
+        scored[0].control.click();
+      }
+      return false;
     })();
     """
 
@@ -2383,47 +2409,6 @@ extension WebViewController: WKUIDelegate {
 
     func webView(
         _ webView: WKWebView,
-        runOpenPanelWith parameters: WKOpenPanelParameters,
-        initiatedByFrame frame: WKFrameInfo,
-        completionHandler: @escaping ([URL]?) -> Void
-    ) {
-        if !pendingDocumentURLs.isEmpty {
-            let selectedURLs: [URL]
-            if parameters.allowsMultipleSelection {
-                selectedURLs = pendingDocumentURLs
-                pendingDocumentURLs.removeAll()
-            } else {
-                selectedURLs = [pendingDocumentURLs.removeFirst()]
-            }
-
-            isAutomaticallyAttachingDocuments = false
-            automaticAttachmentAttemptCount = 0
-            shouldPresentDocumentNotice = false
-            webView.evaluateJavaScript(
-                "delete window.__gptwebIncomingUpload;",
-                completionHandler: nil
-            )
-            completionHandler(selectedURLs)
-            return
-        }
-
-        guard openPanelCompletion == nil else {
-            completionHandler(nil)
-            return
-        }
-
-        openPanelCompletion = completionHandler
-        let picker = UIDocumentPickerViewController(
-            forOpeningContentTypes: [.item],
-            asCopy: true
-        )
-        picker.delegate = self
-        picker.allowsMultipleSelection = parameters.allowsMultipleSelection
-        present(picker, animated: true)
-    }
-
-    func webView(
-        _ webView: WKWebView,
         requestMediaCapturePermissionFor origin: WKSecurityOrigin,
         initiatedByFrame frame: WKFrameInfo,
         type: WKMediaCaptureType,
@@ -2471,25 +2456,6 @@ extension WebViewController: WKUIDelegate {
             completionHandler(alert.textFields?.first?.text)
         })
         present(alert, animated: true)
-    }
-}
-
-extension WebViewController: UIDocumentPickerDelegate {
-    func documentPicker(
-        _ controller: UIDocumentPickerViewController,
-        didPickDocumentsAt urls: [URL]
-    ) {
-        let completion = openPanelCompletion
-        openPanelCompletion = nil
-        completion?(urls)
-    }
-
-    func documentPickerWasCancelled(
-        _ controller: UIDocumentPickerViewController
-    ) {
-        let completion = openPanelCompletion
-        openPanelCompletion = nil
-        completion?(nil)
     }
 }
 

@@ -74,10 +74,10 @@ for (const marker of [
 
 assert.match(sceneSource, /openURLContexts URLContexts/);
 assert.match(sceneSource, /connectionOptions\.urlContexts/);
-assert.match(swiftSource, /runOpenPanelWith parameters: WKOpenPanelParameters/);
-assert.match(swiftSource, /UIDocumentPickerViewController/);
+assert.doesNotMatch(swiftSource, /WKOpenPanelParameters/);
+assert.match(availabilityScript, /composer.*plus|plus.*composer/);
 assert.match(swiftSource, /maximumAutomaticAttachmentBytes/);
 
 console.log(
-  "Document Open In, automatic attachment, and picker fallback checks passed."
+  "Document Open In and automatic attachment checks passed."
 );
