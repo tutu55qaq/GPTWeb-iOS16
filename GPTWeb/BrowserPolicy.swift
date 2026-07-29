@@ -60,13 +60,6 @@ enum BrowserPolicy {
         return false
     }
 
-    static func canPersist(_ url: URL?) -> Bool {
-        guard isFirstParty(url), let path = url?.path.lowercased() else {
-            return false
-        }
-        return !path.hasPrefix("/auth") && !path.hasPrefix("/login")
-    }
-
     private static func contains(_ host: String, in domains: [String]) -> Bool {
         domains.contains { host == $0 || host.hasSuffix("." + $0) }
     }

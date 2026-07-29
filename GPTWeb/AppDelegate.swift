@@ -7,13 +7,12 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        URLCache.shared = URLCache(
-            memoryCapacity: 32 * 1_024 * 1_024,
-            diskCapacity: 256 * 1_024 * 1_024,
-            diskPath: "GPTWebURLCache"
+        // Versions before 1.2.5 restored this URL on every cold launch.
+        // Remove only that navigation preference; WebKit cookies and login
+        // data remain in the persistent website data store.
+        UserDefaults.standard.removeObject(
+            forKey: "GPTWeb.lastFirstPartyURL"
         )
-
-        WebSession.shared.prewarm()
 
         if let incomingURL = launchOptions?[.url] as? URL {
             IncomingDocumentRouter.shared.receive([incomingURL])
@@ -91,23 +90,5 @@ final class WebSession {
 
     let processPool = WKProcessPool()
 
-    private var prewarmedWebView: WKWebView?
-
     private init() {}
-
-    func prewarm() {
-        guard prewarmedWebView == nil else { return }
-
-        let configuration = WKWebViewConfiguration()
-        configuration.processPool = processPool
-        configuration.websiteDataStore = .default()
-
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.loadHTMLString("<html><body></body></html>", baseURL: nil)
-        prewarmedWebView = webView
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.prewarmedWebView = nil
-        }
-    }
 }

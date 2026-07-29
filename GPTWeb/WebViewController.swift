@@ -4,10 +4,6 @@ import UniformTypeIdentifiers
 import WebKit
 
 final class WebViewController: UIViewController {
-    private enum Keys {
-        static let lastURL = "GPTWeb.lastFirstPartyURL"
-    }
-
     private struct PreparedIncomingDocument {
         let sourceURL: URL
         let filename: String
@@ -635,8 +631,8 @@ final class WebViewController: UIViewController {
         webView.uiDelegate = self
         webView.customUserAgent = Self.mobileSafariUserAgent
         webView.allowsBackForwardNavigationGestures = true
-        webView.allowsLinkPreview = true
-        webView.isOpaque = false
+        webView.allowsLinkPreview = false
+        webView.isOpaque = true
         webView.backgroundColor = .systemBackground
         webView.scrollView.backgroundColor = .systemBackground
         webView.scrollView.keyboardDismissMode = .interactive
@@ -718,9 +714,7 @@ final class WebViewController: UIViewController {
     }
 
     private func loadInitialPage() {
-        let storedURL = UserDefaults.standard.string(forKey: Keys.lastURL).flatMap(URL.init(string:))
-        let destination = BrowserPolicy.canPersist(storedURL) ? storedURL! : BrowserPolicy.homeURL
-        load(destination)
+        load(BrowserPolicy.homeURL)
     }
 
     private func load(_ url: URL) {
@@ -760,11 +754,6 @@ final class WebViewController: UIViewController {
         } else {
             webView.reload()
         }
-    }
-
-    private func persistCurrentURL() {
-        guard BrowserPolicy.canPersist(webView.url) else { return }
-        UserDefaults.standard.set(webView.url?.absoluteString, forKey: Keys.lastURL)
     }
 
     private func presentExternalURL(_ url: URL) {
@@ -2338,19 +2327,6 @@ final class WebViewController: UIViewController {
         passive: true
       });
 
-      var observer = new MutationObserver(function () {
-        if (!activeScroller ||
-            !activeScroller.isConnected ||
-            scrollRange(activeScroller) < 12) {
-          activeScroller = null;
-          hideDot();
-        }
-      });
-      observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true
-      });
-
       ensureDot();
     })();
     """
@@ -2422,7 +2398,6 @@ extension WebViewController: WKNavigationDelegate {
         errorView.hide()
         lastLoadFailed = false
         recoveryAttempts.removeAll()
-        persistCurrentURL()
         attemptAutomaticDocumentAttachment()
     }
 

@@ -9,6 +9,14 @@ const swiftSource = fs.readFileSync(
   path.join(projectRoot, "GPTWeb", "WebViewController.swift"),
   "utf8"
 );
+const appSource = fs.readFileSync(
+  path.join(projectRoot, "GPTWeb", "AppDelegate.swift"),
+  "utf8"
+);
+const browserPolicySource = fs.readFileSync(
+  path.join(projectRoot, "GPTWeb", "BrowserPolicy.swift"),
+  "utf8"
+);
 
 assert.match(swiftSource, /source: Self\.workRepairDotScript/);
 assert.doesNotMatch(swiftSource, /source: Self\.compatibilityScript/);
@@ -39,6 +47,20 @@ assert.doesNotMatch(
   /\.scrollTop\s*=/,
   "the repair dot must never simulate scrolling"
 );
+assert.doesNotMatch(
+  script,
+  /new MutationObserver/,
+  "the in-app repair dot must not observe every streamed DOM mutation"
+);
+assert.match(swiftSource, /load\(BrowserPolicy\.homeURL\)/);
+assert.doesNotMatch(swiftSource, /persistCurrentURL/);
+assert.doesNotMatch(swiftSource, /Keys\.lastURL/);
+assert.match(swiftSource, /webView\.allowsLinkPreview = false/);
+assert.match(swiftSource, /webView\.isOpaque = true/);
+assert.match(appSource, /removeObject\(\s*forKey: "GPTWeb\.lastFirstPartyURL"/);
+assert.doesNotMatch(appSource, /URLCache\.shared/);
+assert.doesNotMatch(appSource, /prewarm/);
+assert.doesNotMatch(browserPolicySource, /canPersist/);
 
 const manifest = JSON.parse(fs.readFileSync(
   path.join(

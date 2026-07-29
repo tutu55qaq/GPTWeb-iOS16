@@ -63,8 +63,8 @@ manifest = json.loads(
 )
 if manifest.get("manifest_version") != 2:
     raise SystemExit("Safari Extension 必须使用兼容 iOS 16 的 Manifest V2")
-if manifest.get("version") != "1.2.4":
-    raise SystemExit("Safari Extension 版本号不是 1.2.4")
+if manifest.get("version") != "1.2.5":
+    raise SystemExit("Safari Extension 版本号不是 1.2.5")
 content_scripts = manifest.get("content_scripts", [])
 if len(content_scripts) != 1:
     raise SystemExit("Safari Extension content_scripts 配置错误")
@@ -144,10 +144,10 @@ if "SAFARI_FIX_BUNDLE_IDENTIFIER = com.example.gptweb.safarifix" not in base_con
     raise SystemExit("Base.xcconfig 的 Safari 修复宿主 Bundle ID 不正确")
 if "PRODUCT_BUNDLE_IDENTIFIER = $(HOST_BUNDLE_IDENTIFIER)" not in base_config:
     raise SystemExit("主应用没有使用宿主 Bundle ID")
-if "MARKETING_VERSION = 1.2.4" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.4")
-if "CURRENT_PROJECT_VERSION = 11" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新构建号不是 11")
+if "MARKETING_VERSION = 1.2.5" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.5")
+if "CURRENT_PROJECT_VERSION = 12" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新构建号不是 12")
 if 'EXTRA_SETTINGS+=("HOST_BUNDLE_IDENTIFIER=$BUNDLE_ID")' not in build_script:
     raise SystemExit("自定义主应用 Bundle ID 没有传给 Xcode")
 if '"SAFARI_FIX_BUNDLE_IDENTIFIER=$SAFARI_FIX_BUNDLE_ID"' not in build_script:
@@ -165,6 +165,8 @@ if info.get("CFBundleName") != "ChatGPT":
     raise SystemExit("应用名称不是 ChatGPT")
 if info.get("CFBundleIconName") != "ChatGPTIcon":
     raise SystemExit("主应用没有使用新的 ChatGPTIcon 缓存键")
+if info.get("CADisableMinimumFrameDurationOnPhone") is not True:
+    raise SystemExit("主应用没有保留 ProMotion 自适应高刷新率")
 if info.get("LSSupportsOpeningDocumentsInPlace") is not False:
     raise SystemExit("主应用必须让系统先复制文档，不能原地打开")
 document_types = info.get("CFBundleDocumentTypes", [])
@@ -212,6 +214,9 @@ for marker in (
     'NSFileCoordinator(filePresenter: nil)',
     'try fileManager.copyItem(',
     'startAccessingSecurityScopedResource()',
+    'load(BrowserPolicy.homeURL)',
+    'webView.allowsLinkPreview = false',
+    'webView.isOpaque = true',
 ):
     if marker not in swift:
         raise SystemExit(f"WebViewController.swift 缺少回归标记：{marker}")
@@ -227,6 +232,7 @@ for marker in (
     "final class IncomingDocumentRouter",
     "launchOptions?[.url]",
     "open url: URL",
+    'forKey: "GPTWeb.lastFirstPartyURL"',
 ):
     if marker not in app_swift:
         raise SystemExit(f"AppDelegate.swift 缺少回归标记：{marker}")
@@ -237,6 +243,19 @@ for removed_marker in (
 ):
     if removed_marker in swift:
         raise SystemExit(f"WebViewController.swift 仍包含已放弃的拖放代码：{removed_marker}")
+for removed_marker in (
+    "persistCurrentURL",
+    "Keys.lastURL",
+):
+    if removed_marker in swift:
+        raise SystemExit(f"WebViewController.swift 仍会恢复旧对话：{removed_marker}")
+for removed_marker in (
+    "URLCache.shared",
+    "prewarmedWebView",
+    "func prewarm",
+):
+    if removed_marker in app_swift:
+        raise SystemExit(f"AppDelegate.swift 仍包含额外启动负担：{removed_marker}")
 
 print("Plist、Safari Extension、Asset Catalog 和工程引用检查通过。")
 PY

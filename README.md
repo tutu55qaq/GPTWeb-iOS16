@@ -13,6 +13,8 @@ GPT 管理 GitHub 仓库并接管 GitHub Actions 云端编译、校验和发布 
 ## 主要特性
 
 - 使用持久化 `WKWebsiteDataStore`，登录状态保留在应用自己的 WebKit 沙盒中。
+- 冷启动固定进入 `https://chatgpt.com/` 的空白新对话，不再自动恢复最后打开的长
+  对话；只切到后台再回来时仍保持当前页面。
 - 使用 iOS 16.3 Mobile Safari User-Agent，降低网页对嵌入式浏览器的误判。
 - 仅对 `chatgpt.com`、OpenAI 登录域和登录所需身份提供商保持站内导航；普通外链在
   `SFSafariViewController` 中打开。
@@ -34,7 +36,7 @@ GPT 管理 GitHub 仓库并接管 GitHub Actions 云端编译、校验和发布 
   子 Frame 中提供同一套 Work 滚动修复圆点。
 - TrollStore 版主程序不再嵌入 Safari 扩展，避免系统显示“插件已不可用”；它保持
   原 Bundle ID，可直接覆盖旧版本并保留 WebKit 登录状态。
-- 键盘可交互收起、返回手势、加载进度条、深色模式与 120 Hz 刷新率。
+- 键盘可交互收起、返回手势、加载进度条、深色模式与 ProMotion 自适应高刷新率。
 - 不注入 API Key，不读取或上传对话文本，不拦截网络请求。滚动修复逻辑只检查元素的
   尺寸、滚动位置和父子关系。
 
@@ -112,7 +114,7 @@ iOS 16.2 / TrollStore 2 下 Safari 扩展不出现在设置中的
 `GPTWeb-unsigned.ipa`，不要卸载旧版，这样应用数据容器、Cookie 和登录状态都会
 保留。
 
-1. 覆盖安装 1.2.4。
+1. 覆盖安装 1.2.5。
 2. 在 TrollStore 设置中执行 **Rebuild Icon Cache**。
 3. 结束多任务页面中旧的 ChatGPT 卡片，再重新打开应用。
 4. 如果多任务左上角仍是旧图标，执行一次 Respring；仍未刷新时再重启设备。
@@ -183,6 +185,19 @@ Safari 修复器两个未签名 IPA。工作流不需要证书或 Apple 账号�
 被系统回收后自动恢复，所以通常比长期堆积标签页的 Safari 更稳定。但它仍使用 iOS
 16.3 自带的 WebKit 引擎，无法修复 `chatgpt.com` 未来可能使用而旧 WebKit 不支持的
 JavaScript/CSS 特性，也不能保证一定快于一个全新、无其他标签页的 Safari。
+
+1.2.5 移除了冷启动时恢复最后对话的逻辑。旧版保存的
+`GPTWeb.lastFirstPartyURL` 会在升级后清除，但不会清除 WebKit Cookie、登录状态、
+站点存储或聊天记录。应用被从多任务划掉后再次打开会加载 ChatGPT 根页面；应用只是
+进入后台时不会重置正在查看的对话。
+
+这一版还移除了启动阶段用于“预热”的第二个临时 `WKWebView` 和额外 `URLCache`，
+关闭链接长按预览并使用不透明 WebView 以降低合成负担。Work 修复圆点不再用
+`MutationObserver` 监听聊天流式输出产生的每一次 DOM 变化，而是在实际触摸、滚动
+时重新确认目标。`CADisableMinimumFrameDurationOnPhone` 保持 `true`：按照 Apple
+的定义，这只是允许系统在有余量时使用高于默认值的刷新率，并不要求网页持续以
+120 Hz 渲染，因此继续交给 ProMotion 动态调节。参见 Apple 的
+[`CADisableMinimumFrameDurationOnPhone` 文档](https://developer.apple.com/documentation/bundleresources/information-property-list/cadisableminimumframedurationonphone)。
 
 ## Work 模式滚动修复原理
 
