@@ -619,6 +619,11 @@ final class WebViewController: UIViewController {
 
         let contentController = WKUserContentController()
         contentController.addUserScript(WKUserScript(
+            source: Self.sidebarGestureScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
+        contentController.addUserScript(WKUserScript(
             source: Self.workRepairDotScript,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: false
@@ -630,7 +635,7 @@ final class WebViewController: UIViewController {
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.customUserAgent = Self.mobileSafariUserAgent
-        webView.allowsBackForwardNavigationGestures = true
+        webView.allowsBackForwardNavigationGestures = false
         webView.allowsLinkPreview = false
         webView.isOpaque = true
         webView.backgroundColor = .systemBackground
@@ -1877,6 +1882,253 @@ final class WebViewController: UIViewController {
       window.setInterval(scheduleUpdate, 1200);
       ensureScrollbar();
       scheduleUpdate();
+    })();
+    """
+
+    private static let sidebarGestureScript = """
+    (function () {
+      var hostname = String(window.location.hostname || '').toLowerCase();
+      var isChatGPTDocument = hostname === 'chatgpt.com' ||
+        hostname.slice(-12) === '.chatgpt.com' ||
+        hostname === 'chat.openai.com';
+      if (!isChatGPTDocument) return;
+      if (window.__gptwebSidebarGestureInstalled) return;
+      window.__gptwebSidebarGestureInstalled = true;
+
+      var style = document.createElement('style');
+      style.id = 'gptweb-sidebar-gesture-style';
+      style.textContent = [
+        '#stage-popover-sidebar {',
+        '  will-change: transform, opacity;',
+        '  -webkit-backface-visibility: hidden;',
+        '  backface-visibility: hidden;',
+        '}'
+      ].join('\\n');
+      (document.head || document.documentElement).appendChild(style);
+
+      var gesture = null;
+      var openSelector =
+        'button[data-testid="open-sidebar-button"]';
+      var closeSelector =
+        'button[data-testid="close-sidebar-button"]';
+
+      function isVisible(element) {
+        if (!element || element.isConnected === false) return false;
+        var computed = window.getComputedStyle(element);
+        if (computed.display === 'none' ||
+            computed.visibility === 'hidden') {
+          return false;
+        }
+        var rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }
+
+      function controlText(element) {
+        return [
+          element.getAttribute('data-testid') || '',
+          element.getAttribute('aria-label') || '',
+          element.getAttribute('title') || '',
+          element.textContent || ''
+        ].join(' ').toLowerCase();
+      }
+
+      function fallbackControl(action) {
+        var candidates = Array.prototype.slice.call(
+          document.querySelectorAll('button,[role="button"]')
+        );
+        var best = null;
+        var bestScore = 0;
+        candidates.forEach(function (candidate) {
+          if (!isVisible(candidate)) return;
+          var text = controlText(candidate);
+          var rect = candidate.getBoundingClientRect();
+          var score = 0;
+          if (action === 'open') {
+            if (/open[- _]?sidebar/.test(text)) score += 240;
+            if (/open.*sidebar|sidebar.*open/.test(text)) score += 180;
+            if (/打开.*(侧边栏|边栏|菜单)/.test(text)) score += 180;
+            if (/菜单|menu/.test(text)) score += 35;
+            if (candidate.getAttribute('aria-expanded') === 'false') {
+              score += 65;
+            }
+            if (rect.top < 130 && rect.left < 110) score += 45;
+          } else {
+            if (/close[- _]?sidebar/.test(text)) score += 240;
+            if (/close.*sidebar|sidebar.*close/.test(text)) score += 180;
+            if (/关闭.*(侧边栏|边栏|菜单)/.test(text)) score += 180;
+            if (candidate.getAttribute('aria-expanded') === 'true') {
+              score += 80;
+            }
+          }
+          if (score > bestScore) {
+            best = candidate;
+            bestScore = score;
+          }
+        });
+        return bestScore >= 120 ? best : null;
+      }
+
+      function openControl() {
+        var direct = document.querySelector(openSelector);
+        return isVisible(direct) ? direct : fallbackControl('open');
+      }
+
+      function closeControl() {
+        var direct = document.querySelector(closeSelector);
+        return isVisible(direct) ? direct : fallbackControl('close');
+      }
+
+      function sidebarIsOpen() {
+        var directClose = document.querySelector(closeSelector);
+        if (isVisible(directClose)) return true;
+
+        var sidebar = document.getElementById('stage-popover-sidebar');
+        if (isVisible(sidebar)) return true;
+
+        var directOpen = document.querySelector(openSelector);
+        return Boolean(
+          directOpen &&
+          directOpen.getAttribute('aria-expanded') === 'true'
+        );
+      }
+
+      function activate(element) {
+        if (!element) return false;
+        element.click();
+        return true;
+      }
+
+      function openSidebar() {
+        if (sidebarIsOpen()) return true;
+        return activate(openControl());
+      }
+
+      function closeSidebar() {
+        if (!sidebarIsOpen()) return true;
+        if (activate(closeControl())) return true;
+
+        var toggle = document.querySelector(openSelector);
+        if (toggle &&
+            toggle.getAttribute('aria-expanded') === 'true' &&
+            activate(toggle)) {
+          return true;
+        }
+
+        try {
+          document.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Escape',
+            code: 'Escape',
+            keyCode: 27,
+            which: 27,
+            bubbles: true
+          }));
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      function primeSidebarButton() {
+        var button = openControl();
+        if (!button || sidebarIsOpen()) return;
+        ['pointerover', 'mouseover'].forEach(function (eventName) {
+          try {
+            button.dispatchEvent(new MouseEvent(eventName, {
+              bubbles: true,
+              cancelable: false
+            }));
+          } catch (_) {}
+        });
+      }
+
+      function schedulePrime() {
+        if (typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(primeSidebarButton, {
+            timeout: 1800
+          });
+        } else {
+          window.setTimeout(primeSidebarButton, 900);
+        }
+      }
+
+      function isEditableTarget(target) {
+        if (!target || !target.closest) return false;
+        return Boolean(target.closest(
+          'textarea,input,select,[contenteditable="true"],' +
+          '[role="textbox"],canvas'
+        ));
+      }
+
+      function beginGesture(event) {
+        gesture = null;
+        if (event.touches.length !== 1 ||
+            isEditableTarget(event.target)) {
+          return;
+        }
+
+        var touch = event.touches[0];
+        var isOpen = sidebarIsOpen();
+        if (!isOpen && touch.clientX <= 36) {
+          gesture = {
+            action: 'open',
+            startX: touch.clientX,
+            startY: touch.clientY
+          };
+          primeSidebarButton();
+        } else if (isOpen) {
+          gesture = {
+            action: 'close',
+            startX: touch.clientX,
+            startY: touch.clientY
+          };
+        }
+      }
+
+      function continueGesture(event) {
+        if (!gesture || event.touches.length !== 1) return;
+        var touch = event.touches[0];
+        var deltaX = touch.clientX - gesture.startX;
+        var deltaY = touch.clientY - gesture.startY;
+        var horizontal = Math.abs(deltaX);
+        var vertical = Math.abs(deltaY);
+
+        if (horizontal < 10 && vertical < 10) return;
+        if (vertical > horizontal * 0.82) {
+          gesture = null;
+          return;
+        }
+
+        if (gesture.action === 'open' && deltaX >= 18) {
+          gesture = null;
+          openSidebar();
+        } else if (gesture.action === 'close' && deltaX <= -18) {
+          gesture = null;
+          closeSidebar();
+        }
+      }
+
+      function endGesture() {
+        gesture = null;
+      }
+
+      document.addEventListener('touchstart', beginGesture, {
+        capture: true,
+        passive: true
+      });
+      document.addEventListener('touchmove', continueGesture, {
+        capture: true,
+        passive: true
+      });
+      document.addEventListener('touchend', endGesture, {
+        capture: true,
+        passive: true
+      });
+      document.addEventListener('touchcancel', endGesture, {
+        capture: true,
+        passive: true
+      });
+
+      schedulePrime();
     })();
     """
 

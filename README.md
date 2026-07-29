@@ -15,6 +15,8 @@ GPT 管理 GitHub 仓库并接管 GitHub Actions 云端编译、校验和发布 
 - 使用持久化 `WKWebsiteDataStore`，登录状态保留在应用自己的 WebKit 沙盒中。
 - 冷启动固定进入 `https://chatgpt.com/` 的空白新对话，不再自动恢复最后打开的长
   对话；只切到后台再回来时仍保持当前页面。
+- 关闭 WKWebView 默认的左缘后退手势：从屏幕左缘向右滑会打开聊天列表，列表打开后
+  向左滑会收起。手势监听保持被动，不取消上下滚动和 Work 页面触摸。
 - 使用 iOS 16.3 Mobile Safari User-Agent，降低网页对嵌入式浏览器的误判。
 - 仅对 `chatgpt.com`、OpenAI 登录域和登录所需身份提供商保持站内导航；普通外链在
   `SFSafariViewController` 中打开。
@@ -114,7 +116,7 @@ iOS 16.2 / TrollStore 2 下 Safari 扩展不出现在设置中的
 `GPTWeb-unsigned.ipa`，不要卸载旧版，这样应用数据容器、Cookie 和登录状态都会
 保留。
 
-1. 覆盖安装 1.2.5。
+1. 覆盖安装 1.2.6。
 2. 在 TrollStore 设置中执行 **Rebuild Icon Cache**。
 3. 结束多任务页面中旧的 ChatGPT 卡片，再重新打开应用。
 4. 如果多任务左上角仍是旧图标，执行一次 Respring；仍未刷新时再重启设备。
@@ -198,6 +200,19 @@ JavaScript/CSS 特性，也不能保证一定快于一个全新、无其他标�
 的定义，这只是允许系统在有余量时使用高于默认值的刷新率，并不要求网页持续以
 120 Hz 渲染，因此继续交给 ProMotion 动态调节。参见 Apple 的
 [`CADisableMinimumFrameDurationOnPhone` 文档](https://developer.apple.com/documentation/bundleresources/information-property-list/cadisableminimumframedurationonphone)。
+
+1.2.6 将 `allowsBackForwardNavigationGestures` 关闭，避免系统把左缘右滑解释成网页
+后退。主 Frame 中的轻量脚本只记录单指触摸：起点在左侧 36 pt 内、水平位移达到
+18 pt 且明显大于纵向位移时，立即触发 ChatGPT 的
+`open-sidebar-button`；侧栏已打开时同样阈值的向左滑触发
+`close-sidebar-button`。监听器全部使用 `passive: true`，不调用
+`preventDefault()`，因此纵向滚动仍由 WebKit 原生处理。
+
+为了缩短点击或滑动后侧栏首次出现的等待，页面空闲时会向打开按钮发送一次
+pointer/mouse hover 预热；`#stage-popover-sidebar` 使用 `will-change` 合成提示。
+横向意图一旦在 18 pt 被确认就开始打开动画，不等待手指离屏。选择器失效时还会根据
+英文/中文无障碍标签寻找左上角菜单按钮，相关语法、方向、阈值、预热和纵向手势共存
+由 `scripts/test-sidebar-gesture.js` 做回归检查。
 
 ## Work 模式滚动修复原理
 

@@ -21,6 +21,7 @@ required_files=(
   "SafariExtension/SafariWebExtensionHandler.swift"
   "SafariExtension/Resources/manifest.json"
   "SafariExtension/Resources/content.js"
+  "scripts/test-sidebar-gesture.js"
 )
 
 for relative_path in "${required_files[@]}"; do
@@ -34,6 +35,7 @@ bash -n "$PROJECT_DIR/scripts/build-ipa.sh"
 
 if command -v node >/dev/null 2>&1; then
   node "$PROJECT_DIR/scripts/test-scroll-fix.js"
+  node "$PROJECT_DIR/scripts/test-sidebar-gesture.js"
   node "$PROJECT_DIR/scripts/test-document-import.js"
 fi
 
@@ -63,8 +65,8 @@ manifest = json.loads(
 )
 if manifest.get("manifest_version") != 2:
     raise SystemExit("Safari Extension 必须使用兼容 iOS 16 的 Manifest V2")
-if manifest.get("version") != "1.2.5":
-    raise SystemExit("Safari Extension 版本号不是 1.2.5")
+if manifest.get("version") != "1.2.6":
+    raise SystemExit("Safari Extension 版本号不是 1.2.6")
 content_scripts = manifest.get("content_scripts", [])
 if len(content_scripts) != 1:
     raise SystemExit("Safari Extension content_scripts 配置错误")
@@ -144,10 +146,10 @@ if "SAFARI_FIX_BUNDLE_IDENTIFIER = com.example.gptweb.safarifix" not in base_con
     raise SystemExit("Base.xcconfig 的 Safari 修复宿主 Bundle ID 不正确")
 if "PRODUCT_BUNDLE_IDENTIFIER = $(HOST_BUNDLE_IDENTIFIER)" not in base_config:
     raise SystemExit("主应用没有使用宿主 Bundle ID")
-if "MARKETING_VERSION = 1.2.5" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.5")
-if "CURRENT_PROJECT_VERSION = 12" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新构建号不是 12")
+if "MARKETING_VERSION = 1.2.6" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.6")
+if "CURRENT_PROJECT_VERSION = 13" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新构建号不是 13")
 if 'EXTRA_SETTINGS+=("HOST_BUNDLE_IDENTIFIER=$BUNDLE_ID")' not in build_script:
     raise SystemExit("自定义主应用 Bundle ID 没有传给 Xcode")
 if '"SAFARI_FIX_BUNDLE_IDENTIFIER=$SAFARI_FIX_BUNDLE_ID"' not in build_script:
@@ -206,6 +208,7 @@ scene_swift = (root / "GPTWeb/SceneDelegate.swift").read_text(encoding="utf-8")
 app_swift = (root / "GPTWeb/AppDelegate.swift").read_text(encoding="utf-8")
 for marker in (
     'source: Self.workRepairDotScript',
+    'source: Self.sidebarGestureScript',
     'data-gptweb-scroll-repaired',
     'nsError.domain == "WebKitErrorDomain" && nsError.code == 102',
     'value(forHTTPHeaderField: "Content-Disposition")',
@@ -217,6 +220,9 @@ for marker in (
     'load(BrowserPolicy.homeURL)',
     'webView.allowsLinkPreview = false',
     'webView.isOpaque = true',
+    'webView.allowsBackForwardNavigationGestures = false',
+    'button[data-testid="open-sidebar-button"]',
+    'button[data-testid="close-sidebar-button"]',
 ):
     if marker not in swift:
         raise SystemExit(f"WebViewController.swift 缺少回归标记：{marker}")
