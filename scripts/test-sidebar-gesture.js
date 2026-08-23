@@ -49,6 +49,11 @@ assert.match(swiftSource, /source: Self\.sidebarGestureScript/);
 const listeners = new Map();
 let sidebarOpen = false;
 let pointerPrimeCount = 0;
+const metrics = {
+  layoutReads: 0,
+  styleReads: 0,
+  selectorScans: 0
+};
 
 function makeControl(kind) {
   return {
@@ -63,6 +68,7 @@ function makeControl(kind) {
       return null;
     },
     getBoundingClientRect() {
+      metrics.layoutReads += 1;
       return {
         top: 20,
         left: 10,
@@ -85,6 +91,7 @@ const closeButton = makeControl("close");
 const sidebar = {
   isConnected: true,
   getBoundingClientRect() {
+    metrics.layoutReads += 1;
     return {
       top: 0,
       left: 0,
@@ -116,6 +123,7 @@ const document = {
     return null;
   },
   querySelectorAll() {
+    metrics.selectorScans += 1;
     return sidebarOpen
       ? [openButton, closeButton]
       : [openButton];
@@ -136,6 +144,7 @@ const document = {
 const window = {
   location: { hostname: "chatgpt.com" },
   getComputedStyle() {
+    metrics.styleReads += 1;
     return {
       display: "block",
       visibility: "visible"
@@ -171,6 +180,7 @@ for (const name of ["touchstart", "touchmove", "touchend", "touchcancel"]) {
   assert.equal(listeners.get(name).options.passive, true);
 }
 assert.ok(pointerPrimeCount >= 2, "idle pointer priming did not run");
+const initialPrimeCount = pointerPrimeCount;
 
 const pageTarget = {
   closest() {
@@ -185,10 +195,25 @@ function touchEvent(x, y) {
 }
 
 listeners.get("touchstart").handler(touchEvent(8, 300));
+assert.deepEqual(
+  metrics,
+  { layoutReads: 0, styleReads: 0, selectorScans: 0 },
+  "an edge touch must not force layout, read computed style, or scan controls"
+);
+assert.equal(
+  pointerPrimeCount,
+  initialPrimeCount,
+  "sidebar priming must not run again on the touch hot path"
+);
 listeners.get("touchmove").handler(touchEvent(30, 302));
 assert.equal(sidebarOpen, true, "left-edge right swipe did not open sidebar");
 
 listeners.get("touchstart").handler(touchEvent(300, 300));
+assert.deepEqual(
+  metrics,
+  { layoutReads: 0, styleReads: 0, selectorScans: 0 },
+  "sidebar-close detection must avoid synchronous layout reads"
+);
 listeners.get("touchmove").handler(touchEvent(275, 302));
 assert.equal(sidebarOpen, false, "right-to-left swipe did not close sidebar");
 
@@ -196,6 +221,13 @@ listeners.get("touchstart").handler(touchEvent(8, 300));
 listeners.get("touchmove").handler(touchEvent(14, 340));
 assert.equal(sidebarOpen, false, "vertical scrolling opened the sidebar");
 
+listeners.get("touchstart").handler(touchEvent(200, 300));
+assert.deepEqual(
+  metrics,
+  { layoutReads: 0, styleReads: 0, selectorScans: 0 },
+  "ordinary page taps must not force layout or scan all sidebar buttons"
+);
+
 console.log(
-  "Sidebar edge-open, swipe-close, priming, and gesture coexistence checks passed."
+  "Layout-free sidebar gestures, cached controls, idle-only priming, and coexistence checks passed."
 );

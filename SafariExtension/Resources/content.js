@@ -7,16 +7,22 @@
   if (window.__gptwebWorkRepairDotInstalled) return;
   window.__gptwebWorkRepairDotInstalled = true;
 
-  var style = document.createElement('style');
-  style.id = 'gptweb-work-repair-dot-style';
-  style.textContent = [
+  var compatibilityStyle = document.createElement('style');
+  compatibilityStyle.id = 'gptweb-ios16-base-style';
+  compatibilityStyle.textContent = [
     'html { -webkit-text-size-adjust: 100%; }',
     '@supports (-webkit-touch-callout: none) {',
     '  textarea, input:not([type="checkbox"]):not([type="radio"]), [contenteditable="true"] {',
     '    font-size: 16px !important;',
     '  }',
     '  button, a, [role="button"] { touch-action: manipulation; }',
-    '}',
+    '}'
+  ].join('\n');
+  (document.head || document.documentElement).appendChild(
+    compatibilityStyle
+  );
+
+  var dotStyleRules = [
     '#gptweb-work-repair-dot {',
     '  position: fixed;',
     '  z-index: 2147483646;',
@@ -61,11 +67,12 @@
     '  box-shadow: 0 0 0 5px rgba(10, 132, 255, 0.18);',
     '}'
   ].join('\n');
-  (document.head || document.documentElement).appendChild(style);
 
   var dot = null;
+  var dotStyle = null;
   var activeScroller = null;
   var pendingContentTouch = null;
+  var lastContentTouch = null;
   var press = null;
   var hideTimer = 0;
   var lastContentSelectionAt = 0;
@@ -88,34 +95,40 @@
     return value || 'visible';
   }
 
-  function isVisible(element) {
+  function inspectScroller(element) {
     if (!element || element.nodeType !== 1 || !element.isConnected) {
-      return false;
+      return null;
+    }
+    var range = scrollRange(element);
+    if (range < 12) return null;
+    var root = document.scrollingElement || document.documentElement;
+    if (element === root) {
+      return {
+        element: element,
+        range: range,
+        rect: null,
+        role: '',
+        name: '',
+        native: true
+      };
     }
     var rect = element.getBoundingClientRect();
     var viewportHeight =
       window.innerHeight || document.documentElement.clientHeight;
     var viewportWidth =
       window.innerWidth || document.documentElement.clientWidth;
-    return rect.height >= 96 &&
-      rect.width >= 120 &&
-      rect.bottom > 0 &&
-      rect.right > 0 &&
-      rect.top < viewportHeight &&
-      rect.left < viewportWidth;
-  }
-
-  function isScroller(element) {
-    if (!element || scrollRange(element) < 12) return false;
-    var root = document.scrollingElement || document.documentElement;
-    if (element === root) return true;
-    if (!isVisible(element)) return false;
+    if (rect.height < 96 || rect.width < 120 ||
+        rect.bottom <= 0 || rect.right <= 0 ||
+        rect.top >= viewportHeight || rect.left >= viewportWidth) {
+      return null;
+    }
     var overflow = overflowKind(element);
     var role = element.getAttribute('role') || '';
     var name = String(element.className || '');
-    return overflow === 'auto' ||
+    var native = overflow === 'auto' ||
       overflow === 'scroll' ||
-      overflow === 'overlay' ||
+      overflow === 'overlay';
+    var scrollable = native ||
       overflow === 'hidden' ||
       overflow === 'clip' ||
       element.tagName === 'MAIN' ||
@@ -123,20 +136,21 @@
       role === 'dialog' ||
       name.indexOf('overflow') !== -1 ||
       element.hasAttribute('data-scroll-root');
+    if (!scrollable) return null;
+    return {
+      element: element,
+      range: range,
+      rect: rect,
+      role: role,
+      name: name,
+      native: native
+    };
   }
 
-  function isNativeScroller(element) {
-    var overflow = overflowKind(element);
-    return overflow === 'auto' ||
-      overflow === 'scroll' ||
-      overflow === 'overlay';
-  }
-
-  function brokenScrollerScore(element) {
-    if (!isScroller(element) || isNativeScroller(element)) return -1;
-    var rect = element.getBoundingClientRect();
-    var role = element.getAttribute('role') || '';
-    var name = String(element.className || '');
+  function brokenScrollerScore(element, inspection) {
+    var inspected = inspection || inspectScroller(element);
+    if (!inspected || inspected.native || !inspected.rect) return -1;
+    var rect = inspected.rect;
     var viewportArea = Math.max(
       1,
       window.innerWidth * window.innerHeight
@@ -145,32 +159,39 @@
       100,
       rect.width * rect.height / viewportArea * 100
     );
-    score += Math.min(45, scrollRange(element) / 160);
-    if (element.tagName === 'MAIN' || role === 'main') score += 80;
-    if (role === 'dialog') score += 45;
+    score += Math.min(45, inspected.range / 160);
+    if (element.tagName === 'MAIN' || inspected.role === 'main') {
+      score += 80;
+    }
+    if (inspected.role === 'dialog') score += 45;
     if (element.hasAttribute('data-scroll-root')) score += 70;
-    if (name.indexOf('overflow') !== -1) score += 35;
+    if (inspected.name.indexOf('overflow') !== -1) score += 35;
     return score;
   }
 
-  function nearestScroller(start) {
+  function nearestScroller(start, path) {
     var element = start && start.nodeType === 1 ?
       start :
       start && start.parentElement;
     var brokenCandidate = null;
     var brokenScore = -1;
     var depth = 0;
+    var pathLength = path ? Math.min(path.length, 40) : 0;
     while (element && depth < 40) {
-      if (isScroller(element)) {
-        if (isNativeScroller(element)) return element;
-        var score = brokenScrollerScore(element);
+      var inspected = inspectScroller(element);
+      if (inspected) {
+        if (inspected.native) return element;
+        var score = brokenScrollerScore(element, inspected);
         if (score > brokenScore) {
           brokenCandidate = element;
           brokenScore = score;
         }
       }
-      element = parentElementAcrossShadowDOM(element);
       depth += 1;
+      element = depth < pathLength && path[depth] &&
+        path[depth].nodeType === 1 ?
+          path[depth] :
+          parentElementAcrossShadowDOM(element);
     }
     return brokenCandidate;
   }
@@ -198,16 +219,17 @@
     var count = Math.min(nodes.length, 400);
     for (var index = 0; index < count; index += 1) {
       var node = nodes[index];
-      if (!isScroller(node)) continue;
-      var rect = node.getBoundingClientRect();
+      var inspected = inspectScroller(node);
+      if (!inspected || !inspected.rect) continue;
+      var rect = inspected.rect;
       var containsStart = start && node.contains(start);
       var containsPoint = pointInside(rect, x, y);
       if (!containsStart && !containsPoint) continue;
       var score = 0;
       if (containsStart) score += 140;
       if (containsPoint) score += 80;
-      if (isNativeScroller(node)) score += 90;
-      score += Math.max(0, brokenScrollerScore(node));
+      if (inspected.native) score += 90;
+      score += Math.max(0, brokenScrollerScore(node, inspected));
       if (score > bestScore) {
         best = node;
         bestScore = score;
@@ -216,9 +238,22 @@
     return best;
   }
 
-  function findScroller(start, x, y) {
-    var nested = nearestScroller(start) ||
-      fallbackScroller(start, x, y);
+  function cachedScroller(start, path) {
+    if (!activeScroller || !activeScroller.isConnected) return null;
+    var root = document.scrollingElement || document.documentElement;
+    if (activeScroller === root) return null;
+    if (activeScroller.contains && activeScroller.contains(start)) {
+      return activeScroller;
+    }
+    if (path && path.indexOf(activeScroller) !== -1) {
+      return activeScroller;
+    }
+    return null;
+  }
+
+  function findScroller(start, path) {
+    var nested = cachedScroller(start, path) ||
+      nearestScroller(start, path);
     if (nested) return nested;
     var root = document.scrollingElement || document.documentElement;
     return root && scrollRange(root) >= 12 ? root : null;
@@ -227,6 +262,12 @@
   function ensureDot() {
     if (dot && dot.isConnected) return true;
     if (!document.body) return false;
+    if (!dotStyle || !dotStyle.isConnected) {
+      dotStyle = document.createElement('style');
+      dotStyle.id = 'gptweb-work-repair-dot-style';
+      dotStyle.textContent = dotStyleRules;
+      (document.head || document.documentElement).appendChild(dotStyle);
+    }
     dot = document.createElement('div');
     dot.id = 'gptweb-work-repair-dot';
     dot.setAttribute('role', 'button');
@@ -327,7 +368,17 @@
     press.timer = window.setTimeout(function () {
       if (!press) return;
       press.timer = 0;
-      if (!repairScroller(activeScroller)) return;
+      var selectedScroller = activeScroller;
+      var root = document.scrollingElement || document.documentElement;
+      if ((!selectedScroller || selectedScroller === root ||
+           !selectedScroller.isConnected) && lastContentTouch) {
+        selectedScroller = fallbackScroller(
+          lastContentTouch.target,
+          lastContentTouch.startX,
+          lastContentTouch.startY
+        ) || selectedScroller;
+      }
+      if (!repairScroller(selectedScroller)) return;
       press.repaired = true;
       dot.classList.remove('gptweb-pressing');
       dot.classList.add('gptweb-repaired');
@@ -377,18 +428,8 @@
     if (dot && dot.contains(event.target)) return;
     if (event.touches.length !== 1) return;
     var touch = event.touches[0];
-    var scroller = findScroller(
-      event.target,
-      touch.clientX,
-      touch.clientY
-    );
-    if (!scroller) {
-      pendingContentTouch = null;
-      return;
-    }
-    activeScroller = scroller;
-    lastContentSelectionAt = Date.now();
     pendingContentTouch = {
+      target: event.target,
       startX: touch.clientX,
       startY: touch.clientY
     };
@@ -406,7 +447,16 @@
         Math.abs(deltaY) <= Math.abs(deltaX)) {
       return;
     }
+    var selectedTouch = pendingContentTouch;
     pendingContentTouch = null;
+    var path = typeof event.composedPath === 'function' ?
+      event.composedPath() :
+      null;
+    var scroller = findScroller(selectedTouch.target, path);
+    if (!scroller) return;
+    activeScroller = scroller;
+    lastContentTouch = selectedTouch;
+    lastContentSelectionAt = Date.now();
     revealDot();
   }, {
     capture: true,
@@ -436,7 +486,8 @@
       activeScroller !== root &&
       target === root &&
       (press || Date.now() - lastContentSelectionAt < 2400);
-    if (!preserveNestedTarget && isScroller(target)) {
+    if (!preserveNestedTarget && target !== activeScroller &&
+        target && target.nodeType === 1 && target.isConnected) {
       activeScroller = target;
     }
   }, {
@@ -456,6 +507,4 @@
     childList: true,
     subtree: true
   });
-
-  ensureDot();
 })();
