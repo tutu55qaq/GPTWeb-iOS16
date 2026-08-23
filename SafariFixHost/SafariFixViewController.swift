@@ -33,7 +33,7 @@ final class SafariFixViewController: UIViewController {
 
         4. 重新打开 Safari 并刷新 ChatGPT
 
-        5. 进入 Work 对话，纵向滑动后长按右上角蓝点
+        5. 进入 Work 对话，页面会自动修复并恢复原生滑动
 
         注意：这个扩展宿主必须使用正常的 Apple 开发者证书与匹配的 Provisioning Profile 安装，不能通过 TrollStore 注册。
         """

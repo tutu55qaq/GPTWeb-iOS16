@@ -4,176 +4,119 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const projectRoot = path.resolve(__dirname, "..");
+const root = path.join(__dirname, "..");
 const swiftSource = fs.readFileSync(
-  path.join(projectRoot, "GPTWeb", "WebViewController.swift"),
+  path.join(root, "GPTWeb", "WebViewController.swift"),
   "utf8"
 );
 const appSource = fs.readFileSync(
-  path.join(projectRoot, "GPTWeb", "AppDelegate.swift"),
+  path.join(root, "GPTWeb", "AppDelegate.swift"),
   "utf8"
 );
-const browserPolicySource = fs.readFileSync(
-  path.join(projectRoot, "GPTWeb", "BrowserPolicy.swift"),
+const policySource = fs.readFileSync(
+  path.join(root, "GPTWeb", "BrowserPolicy.swift"),
+  "utf8"
+);
+const safariScript = fs.readFileSync(
+  path.join(root, "SafariExtension", "Resources", "content.js"),
   "utf8"
 );
 
-assert.match(swiftSource, /source: Self\.workRepairDotScript/);
-assert.doesNotMatch(swiftSource, /source: Self\.compatibilityScript/);
-assert.doesNotMatch(swiftSource, /source: Self\.scrollbarScript/);
-
-const declaration = 'private static let workRepairDotScript = """';
+const declaration = 'private static let automaticScrollRepairScript = """';
 const scriptStart = swiftSource.indexOf(declaration);
-assert.notEqual(scriptStart, -1, "workRepairDotScript declaration is missing");
+assert.notEqual(scriptStart, -1, "automaticScrollRepairScript declaration is missing");
 const contentStart = swiftSource.indexOf("\n", scriptStart) + 1;
 const contentEnd = swiftSource.indexOf('\n    """', contentStart);
-assert.notEqual(contentEnd, -1, "workRepairDotScript terminator is missing");
-const script = swiftSource
-  .slice(contentStart, contentEnd)
+assert.notEqual(contentEnd, -1, "automaticScrollRepairScript terminator is missing");
+const appScript = swiftSource.slice(contentStart, contentEnd)
   .split("\n")
   .map((line) => line.startsWith("    ") ? line.slice(4) : line)
   .join("\n");
 
-new Function("window", "document", "MutationObserver", script);
-assert.match(script, /gptweb-work-repair-dot/);
-assert.match(script, /'  width: 9px;'/);
-assert.match(script, /'  height: 9px;'/);
-assert.match(script, /'  background: #0a84ff;'/);
-assert.match(script, /function repairScroller/);
-assert.match(script, /data-gptweb-scroll-repaired/);
-assert.match(script, /}, 360\);/);
-assert.doesNotMatch(
-  script,
+assert.equal(appScript.trim(), safariScript.trim(), "Safari and app fixes must stay identical");
+new Function("window", "document", "MutationObserver", appScript);
+
+for (const marker of [
+  "source: Self.automaticScrollRepairScript",
+  "injectionTime: .atDocumentStart",
+  "forMainFrameOnly: false",
+  "scheduleAutomaticScrollRepair()",
+  "webView.observe(\\.url",
+  "window.__gptwebRepairScroll",
+  "load(BrowserPolicy.homeURL)",
+  "webView.allowsLinkPreview = false",
+  "webView.isOpaque = true"
+]) {
+  assert.ok(swiftSource.includes(marker), "App is missing automatic-repair marker: " + marker);
+}
+
+for (const marker of [
+  "gptweb-ios16-automatic-scroll-style",
+  "data-gptweb-scroll-repaired",
+  "function repairScroller",
+  "function armRepair",
+  "observer.disconnect()",
+  "maxAttempts = 12",
+  "Date.now() + 2800",
+  "candidates.length < 48",
+  "DOMContentLoaded",
+  "document.elementFromPoint"
+]) {
+  assert.ok(appScript.includes(marker), "Automatic scroll repair is missing: " + marker);
+}
+
+for (const forbidden of [
+  /addEventListener\(\s*['"]touchstart['"]/,
+  /addEventListener\(\s*['"]touchmove['"]/,
+  /addEventListener\(\s*['"]touchend['"]/,
+  /addEventListener\(\s*['"]scroll['"]/,
   /\.scrollTop\s*=/,
-  "the repair dot must never simulate scrolling"
-);
-assert.doesNotMatch(
-  script,
-  /new MutationObserver/,
-  "the in-app repair dot must not observe every streamed DOM mutation"
-);
-assert.match(script, /function cachedScroller\(start, path\)/);
-assert.match(script, /event\.composedPath\(\)/);
-const findScrollerStart = script.indexOf("function findScroller(start, path)");
-const findScrollerEnd = script.indexOf("function ensureDot()", findScrollerStart);
-assert.doesNotMatch(
-  script.slice(findScrollerStart, findScrollerEnd),
-  /fallbackScroller\(/,
-  "normal gesture selection must not scan every candidate in the document"
-);
-assert.match(swiftSource, /load\(BrowserPolicy\.homeURL\)/);
-assert.doesNotMatch(swiftSource, /persistCurrentURL/);
-assert.doesNotMatch(swiftSource, /Keys\.lastURL/);
-assert.match(swiftSource, /webView\.allowsLinkPreview = false/);
-assert.match(swiftSource, /webView\.isOpaque = true/);
+  /gptweb-work-repair-dot/,
+  /sidebarGestureScript/,
+  /scrollbarScript/
+]) {
+  assert.doesNotMatch(appScript, forbidden, "Automatic repair contains forbidden hot-path logic");
+  assert.doesNotMatch(safariScript, forbidden, "Safari repair contains forbidden hot-path logic");
+}
+
 assert.match(appSource, /removeObject\(\s*forKey: "GPTWeb\.lastFirstPartyURL"/);
-assert.doesNotMatch(appSource, /URLCache\.shared/);
-assert.doesNotMatch(appSource, /prewarm/);
-assert.doesNotMatch(browserPolicySource, /canPersist/);
+assert.doesNotMatch(appSource, /URLCache\.shared|prewarm/);
+assert.doesNotMatch(policySource, /canPersist/);
 
 const manifest = JSON.parse(fs.readFileSync(
-  path.join(
-    projectRoot,
-    "SafariExtension",
-    "Resources",
-    "manifest.json"
-  ),
+  path.join(root, "SafariExtension", "Resources", "manifest.json"),
   "utf8"
 ));
 assert.equal(manifest.manifest_version, 2);
+assert.equal(manifest.version, "1.2.8");
 assert.equal(manifest.content_scripts.length, 1);
+assert.equal(manifest.content_scripts[0].run_at, "document_start");
 assert.equal(manifest.content_scripts[0].all_frames, true);
-assert.equal(manifest.content_scripts[0].run_at, "document_end");
 assert.deepEqual(manifest.content_scripts[0].js, ["content.js"]);
-assert.ok(
-  manifest.content_scripts[0].matches.includes("https://chatgpt.com/*")
-);
+assert.ok(manifest.content_scripts[0].matches.includes("https://chatgpt.com/*"));
 
-const safariScript = fs.readFileSync(
-  path.join(
-    projectRoot,
-    "SafariExtension",
-    "Resources",
-    "content.js"
-  ),
-  "utf8"
-);
-new Function("window", "document", "MutationObserver", safariScript);
-for (const marker of [
-  "gptweb-work-repair-dot",
-  "function repairScroller",
-  "data-gptweb-scroll-repaired",
-  "'overflow-y', 'auto', 'important'",
-  "'touch-action', 'pan-y', 'important'",
-  "}, 360);"
-]) {
-  assert.ok(
-    safariScript.includes(marker),
-    `Safari content script is missing marker: ${marker}`
-  );
-}
-assert.doesNotMatch(
-  safariScript,
-  /\.scrollTop\s*=/,
-  "the Safari extension must never simulate scrolling"
-);
-
-function makeElement({
-  tagName = "DIV",
-  parentElement = null,
-  clientHeight = 400,
-  clientWidth = 400,
-  scrollHeight = 400,
-  overflowY = "visible",
-  role = "",
-  metrics = null
-} = {}) {
+function makeElement(options = {}) {
   const attributes = new Map();
-  const classes = new Set();
-  const listeners = new Map();
-  const priorities = new Map();
-  if (role) attributes.set("role", role);
-
+  const metrics = options.metrics;
+  if (options.role) attributes.set("role", options.role);
+  if (options.scrollRoot) attributes.set("data-scroll-root", "");
   const element = {
     nodeType: 1,
-    tagName,
-    parentElement,
-    clientHeight,
-    clientWidth,
-    scrollHeight,
-    scrollTop: 0,
-    className: "",
-    isConnected: true,
-    overflowY,
-    id: "",
+    tagName: options.tagName || "DIV",
+    parentElement: options.parentElement || null,
+    clientHeight: options.clientHeight || 520,
+    clientWidth: options.clientWidth || 400,
+    scrollHeight: options.scrollHeight || options.clientHeight || 520,
+    scrollTop: options.scrollTop || 0,
+    overflowY: options.overflowY || "visible",
+    className: options.className || "",
+    isConnected: options.isConnected !== false,
+    insideSidebar: options.insideSidebar || false,
     children: [],
     style: {
-      setProperty(name, value, priority = "") {
+      setProperty(name, value, priority) {
         this[name] = value;
-        priorities.set(name, priority);
-      },
-      getPropertyValue(name) {
-        return this[name] || "";
-      },
-      getPropertyPriority(name) {
-        return priorities.get(name) || "";
-      },
-      removeProperty(name) {
-        const value = this[name] || "";
-        delete this[name];
-        priorities.delete(name);
-        return value;
-      }
-    },
-    classList: {
-      add(name) {
-        classes.add(name);
-      },
-      remove(name) {
-        classes.delete(name);
-      },
-      contains(name) {
-        return classes.has(name);
+        this[name + ":priority"] = priority;
       }
     },
     appendChild(child) {
@@ -182,467 +125,303 @@ function makeElement({
       this.children.push(child);
       return child;
     },
-    addEventListener(name, handler, options = {}) {
-      const entries = listeners.get(name) || [];
-      entries.push({ handler, options });
-      listeners.set(name, entries);
-    },
-    getBoundingClientRect() {
-      if (metrics) metrics.layoutReads += 1;
-      if (this.id === "gptweb-work-repair-dot") {
-        return {
-          top: 56,
-          right: 428,
-          bottom: 86,
-          left: 398,
-          width: 30,
-          height: 30
-        };
-      }
-      return {
-        top: 0,
-        right: this.clientWidth,
-        bottom: this.clientHeight,
-        left: 0,
-        width: this.clientWidth,
-        height: this.clientHeight
-      };
-    },
     getAttribute(name) {
-      return attributes.get(name) || null;
+      return attributes.has(name) ? attributes.get(name) : null;
+    },
+    setAttribute(name, value) {
+      attributes.set(name, String(value));
     },
     hasAttribute(name) {
       return attributes.has(name);
     },
-    setAttribute(name, value) {
-      attributes.set(name, value);
+    getBoundingClientRect() {
+      metrics.layoutReads += 1;
+      return {
+        top: 100,
+        left: 20,
+        bottom: 100 + this.clientHeight,
+        right: 20 + this.clientWidth,
+        height: this.clientHeight,
+        width: this.clientWidth
+      };
     },
-    contains(candidate) {
-      let node = candidate;
-      while (node) {
-        if (node === this) return true;
-        node = node.parentElement;
-      }
-      return false;
-    },
-    getRootNode() {
-      return { host: null };
-    },
-    _listeners: listeners
+    closest(selector) {
+      return this.insideSidebar && selector.includes("stage-popover-sidebar")
+        ? {}
+        : null;
+    }
   };
+  Object.defineProperty(element, "offsetHeight", {
+    get() {
+      metrics.layoutFlushes += 1;
+      return element.clientHeight;
+    }
+  });
   return element;
 }
 
-function makeEnvironment(hostname) {
-  const documentListeners = new Map();
-  const candidates = [];
-  const timers = new Map();
+function makeEnvironment(options = {}) {
   const metrics = {
     layoutReads: 0,
+    layoutFlushes: 0,
     styleReads: 0,
     selectorScans: 0
   };
+  const documentListeners = new Map();
+  const windowListeners = new Map();
+  const timers = new Map();
+  const observers = [];
   let nextTimer = 1;
 
   const documentElement = makeElement({
     tagName: "HTML",
-    clientHeight: 800,
-    clientWidth: 428,
-    scrollHeight: 800,
-    metrics
-  });
-  const head = makeElement({
-    tagName: "HEAD",
-    parentElement: documentElement,
-    clientHeight: 0,
+    clientHeight: 844,
+    clientWidth: 390,
+    scrollHeight: 1044,
     metrics
   });
   const body = makeElement({
     tagName: "BODY",
     parentElement: documentElement,
-    clientHeight: 800,
-    clientWidth: 428,
-    scrollHeight: 800,
+    clientHeight: 844,
+    clientWidth: 390,
     metrics
   });
-  documentElement.appendChild(head);
-  documentElement.appendChild(body);
+  const main = makeElement({
+    tagName: "MAIN",
+    parentElement: body,
+    clientHeight: 760,
+    clientWidth: 390,
+    scrollHeight: 760,
+    metrics
+  });
+  const state = {
+    candidates: [],
+    focused: null,
+    main,
+    metrics,
+    timers,
+    observers,
+    documentListeners,
+    windowListeners
+  };
+
+  class MockMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.connected = false;
+      this.target = null;
+      observers.push(this);
+    }
+
+    observe(target, configuration) {
+      this.target = target;
+      this.configuration = configuration;
+      this.connected = true;
+    }
+
+    disconnect() {
+      this.connected = false;
+      this.disconnectCount = (this.disconnectCount || 0) + 1;
+    }
+
+    trigger() {
+      if (this.connected) this.callback([{ type: "childList" }]);
+    }
+  }
 
   const document = {
+    head: options.noHead ? null : {
+      appendChild(child) {
+        documentElement.appendChild(child);
+      }
+    },
+    body,
     documentElement,
     scrollingElement: documentElement,
-    head,
-    body,
-    createElement(tagName) {
-      return makeElement({
-        tagName: String(tagName).toUpperCase(),
-        clientHeight: 30,
-        clientWidth: 30,
-        scrollHeight: 30,
-        metrics
-      });
+    readyState: options.readyState || "complete",
+    createElement() {
+      return makeElement({ metrics });
     },
-    addEventListener(name, handler, options = {}) {
-      const entries = documentListeners.get(name) || [];
-      entries.push({ handler, options });
-      documentListeners.set(name, entries);
+    elementFromPoint() {
+      return state.focused;
     },
     querySelectorAll() {
       metrics.selectorScans += 1;
-      return candidates;
+      return state.candidates;
+    },
+    querySelector(selector) {
+      return selector === 'main, [role="main"]' ? state.main : null;
+    },
+    addEventListener(name, handler, configuration) {
+      documentListeners.set(name, { handler, configuration });
     }
   };
+
   const window = {
-    location: { hostname },
-    innerHeight: 800,
-    innerWidth: 428,
+    location: { hostname: options.hostname || "chatgpt.com" },
+    innerWidth: 390,
+    innerHeight: 844,
+    addEventListener(name, handler, configuration) {
+      windowListeners.set(name, { handler, configuration });
+    },
     getComputedStyle(element) {
       metrics.styleReads += 1;
-      return { overflowY: element.style["overflow-y"] || element.overflowY };
+      return { overflowY: element.overflowY };
     },
-    setTimeout(callback, delay) {
-      const id = nextTimer++;
-      timers.set(id, { callback, delay });
-      return id;
+    setTimeout(handler, delay) {
+      const identifier = nextTimer++;
+      timers.set(identifier, { handler, delay });
+      return identifier;
     },
-    clearTimeout(id) {
-      timers.delete(id);
+    clearTimeout(identifier) {
+      timers.delete(identifier);
     }
   };
-  class MutationObserver {
-    constructor(callback) {
-      this.callback = callback;
-    }
-    observe() {}
-  }
 
-  function runTimersWithDelay(delay) {
-    const ready = [...timers.entries()]
-      .filter(([, timer]) => timer.delay === delay);
-    for (const [id, timer] of ready) {
-      timers.delete(id);
-      timer.callback();
-    }
-  }
-
-  return {
-    body,
-    candidates,
-    document,
-    documentListeners,
-    metrics,
-    MutationObserver,
-    runTimersWithDelay,
-    window
+  state.document = document;
+  state.window = window;
+  state.MutationObserver = MockMutationObserver;
+  state.runNextTimer = function runNextTimer() {
+    const entry = [...timers.entries()].sort(
+      (left, right) => left[1].delay - right[1].delay
+    )[0];
+    if (!entry) return false;
+    timers.delete(entry[0]);
+    entry[1].handler();
+    return true;
   };
+  state.makeElement = (elementOptions) => makeElement({
+    ...elementOptions,
+    metrics
+  });
+  return state;
 }
 
-function runScript(environment, source = script) {
-  new Function(
-    "window",
-    "document",
-    "MutationObserver",
-    source
-  )(environment.window, environment.document, environment.MutationObserver);
-}
-
-function dotIn(environment) {
-  return environment.body.children.find(
-    (element) => element.id === "gptweb-work-repair-dot"
+function install(environment, script = appScript) {
+  new Function("window", "document", "MutationObserver", script)(
+    environment.window,
+    environment.document,
+    environment.MutationObserver
   );
 }
 
-function documentTouch(environment, target, x = 200, y = 300) {
-  environment.lastTouchTarget = target;
-  const registration = environment.documentListeners.get("touchstart")[0];
-  registration.handler({
-    target,
-    touches: [{ clientX: x, clientY: y }]
+function createWorkScroller(environment, options = {}) {
+  const scroller = environment.makeElement({
+    parentElement: options.parentElement || environment.main,
+    clientHeight: options.clientHeight || 570,
+    clientWidth: 370,
+    scrollHeight: options.scrollHeight || 2240,
+    scrollTop: options.scrollTop || 145,
+    overflowY: options.overflowY || "auto",
+    className: options.className || "overflow-y-auto conversation-thread",
+    scrollRoot: options.scrollRoot !== false,
+    role: options.role || ""
   });
-}
-
-function documentMove(environment, x = 200, y = 260) {
-  const registration = environment.documentListeners.get("touchmove")[0];
-  registration.handler({
-    touches: [{ clientX: x, clientY: y }],
-    composedPath() {
-      const path = [];
-      let node = environment.lastTouchTarget;
-      while (node) {
-        path.push(node);
-        node = node.parentElement;
-      }
-      return path;
-    }
+  const message = environment.makeElement({
+    parentElement: scroller,
+    clientHeight: 80,
+    clientWidth: 350,
+    scrollHeight: 80
   });
+  environment.candidates = [scroller, environment.main];
+  environment.focused = message;
+  return scroller;
 }
 
-function dotEvent(target, x = 413, y = 71) {
-  return {
-    target,
-    touches: [{ clientX: x, clientY: y }],
-    cancelable: true,
-    prevented: false,
-    stopped: false,
-    preventDefault() {
-      this.prevented = true;
-    },
-    stopPropagation() {
-      this.stopped = true;
-    }
-  };
-}
-
-const blockedEnvironment = makeEnvironment("example.com");
-runScript(blockedEnvironment);
-assert.equal(blockedEnvironment.documentListeners.size, 0);
-assert.equal(dotIn(blockedEnvironment), undefined);
-
-const workEnvironment = makeEnvironment("chatgpt.com");
-workEnvironment.document.documentElement.scrollHeight = 1200;
-const workScroller = makeElement({
-  parentElement: workEnvironment.body,
-  clientHeight: 500,
-  clientWidth: 400,
-  scrollHeight: 2500,
-  overflowY: "auto",
-  role: "main",
-  metrics: workEnvironment.metrics
-});
-const workClippingLayer = makeElement({
-  parentElement: workScroller,
-  clientHeight: 420,
+const immediate = makeEnvironment({ noHead: true });
+const clippingLayer = immediate.makeElement({
+  parentElement: immediate.main,
+  clientHeight: 690,
   clientWidth: 390,
-  scrollHeight: 1200,
+  scrollHeight: 1890,
   overflowY: "hidden",
-  metrics: workEnvironment.metrics
+  className: "overflow-hidden"
 });
-const workMessage = makeElement({
-  parentElement: workClippingLayer,
-  clientHeight: 160,
-  clientWidth: 380,
-  scrollHeight: 160,
-  metrics: workEnvironment.metrics
+const workScroller = createWorkScroller(immediate, {
+  parentElement: clippingLayer,
+  scrollTop: 211
 });
-workEnvironment.body.appendChild(workScroller);
-workScroller.appendChild(workClippingLayer);
-workClippingLayer.appendChild(workMessage);
-workEnvironment.candidates.push(workClippingLayer, workScroller);
-runScript(workEnvironment);
+immediate.candidates.unshift(clippingLayer);
+install(immediate);
 
-assert.ok(workEnvironment.documentListeners.has("touchstart"));
-assert.equal(
-  workEnvironment.documentListeners.get("touchstart")[0].options.passive,
-  true
-);
-assert.equal(
-  workEnvironment.documentListeners.get("touchmove")[0].options.passive,
-  true,
-  "the vertical gesture detector must remain passive"
-);
-
-assert.equal(
-  dotIn(workEnvironment),
-  undefined,
-  "the repair dot must not exist before the first vertical gesture"
-);
-
-const touchStartMetrics = { ...workEnvironment.metrics };
-documentTouch(workEnvironment, workMessage);
-assert.deepEqual(
-  workEnvironment.metrics,
-  touchStartMetrics,
-  "touchstart must not read layout, computed style, or scan the document"
-);
-assert.equal(
-  dotIn(workEnvironment),
-  undefined,
-  "a static tap must not create the repair dot"
-);
-documentMove(workEnvironment);
-const dot = dotIn(workEnvironment);
-assert.ok(dot, "the first vertical gesture should lazily create the repair dot");
-assert.equal(dot._listeners.get("touchstart")[0].options.passive, false);
-assert.equal(dot._listeners.get("touchmove")[0].options.passive, false);
-assert.equal(
-  dot.classList.contains("gptweb-visible"),
-  true,
-  "a vertical swipe should reveal the repair dot"
-);
-assert.equal(
-  workEnvironment.metrics.selectorScans,
-  0,
-  "ordinary scrolling must not run a document-wide candidate scan"
-);
-
-const scrollMetrics = { ...workEnvironment.metrics };
-workEnvironment.documentListeners.get("scroll")[0].handler({
-  target: workScroller
-});
-assert.deepEqual(
-  workEnvironment.metrics,
-  scrollMetrics,
-  "native scroll events must not force layout or recompute styles"
-);
-workEnvironment.documentListeners.get("scroll")[0].handler({
-  target: workEnvironment.document
-});
-
-const initialScrollTop = workScroller.scrollTop;
-const pressStart = dotEvent(dot);
-dot._listeners.get("touchstart")[0].handler(pressStart);
-assert.equal(pressStart.prevented, true);
-assert.equal(pressStart.stopped, true);
-assert.equal(dot.classList.contains("gptweb-pressing"), true);
-
-workEnvironment.runTimersWithDelay(360);
-assert.equal(
-  workScroller.getAttribute("data-gptweb-scroll-repaired"),
-  "true",
-  "long pressing the dot must repair the selected Work scroller"
-);
+assert.equal(workScroller.getAttribute("data-gptweb-scroll-repaired"), "true");
 assert.equal(workScroller.style["overflow-y"], "auto");
 assert.equal(workScroller.style["-webkit-overflow-scrolling"], "auto");
 assert.equal(workScroller.style["overscroll-behavior-y"], "contain");
 assert.equal(workScroller.style["touch-action"], "pan-y");
 assert.equal(workScroller.style["min-height"], "0");
-assert.equal(workScroller.style.getPropertyPriority("touch-action"), "important");
-assert.equal(dot.classList.contains("gptweb-repaired"), true);
-assert.equal(workScroller.scrollTop, initialScrollTop);
-assert.equal(workEnvironment.document.documentElement.scrollTop, 0);
-assert.equal(workClippingLayer.getAttribute("data-gptweb-scroll-repaired"), null);
-
-const pressEnd = dotEvent(dot);
-pressEnd.touches = [];
-dot._listeners.get("touchend")[0].handler(pressEnd);
-workEnvironment.runTimersWithDelay(320);
-assert.equal(dot.classList.contains("gptweb-visible"), false);
-
-documentTouch(workEnvironment, workMessage);
-const cachedScrollerMetrics = { ...workEnvironment.metrics };
-documentMove(workEnvironment);
-assert.deepEqual(
-  workEnvironment.metrics,
-  cachedScrollerMetrics,
-  "an already-selected scroller must be reused without layout reads"
-);
+assert.equal(workScroller.style["overflow-y:priority"], "important");
+assert.equal(workScroller.scrollTop, 211, "Automatic repair modified native scroll position");
+assert.equal(clippingLayer.getAttribute("data-gptweb-scroll-repaired"), null);
+assert.equal(immediate.metrics.layoutFlushes, 1);
+assert.equal(immediate.observers.length, 0, "Ready Work content must not create an observer");
+assert.equal(immediate.timers.size, 0);
 assert.equal(
-  dot.classList.contains("gptweb-visible"),
-  false,
-  "a repaired Work scroller must continue with native scrolling"
+  immediate.document.documentElement.children[0].id,
+  "gptweb-ios16-automatic-scroll-style"
 );
 
-const clippedEnvironment = makeEnvironment("chatgpt.com");
-const clippedScroller = makeElement({
-  parentElement: clippedEnvironment.body,
-  clientHeight: 500,
-  clientWidth: 400,
-  scrollHeight: 1800,
-  overflowY: "clip",
-  role: "main",
-  metrics: clippedEnvironment.metrics
-});
-const clippedMessage = makeElement({
-  parentElement: clippedScroller,
-  clientHeight: 160,
-  clientWidth: 380,
-  scrollHeight: 160,
-  metrics: clippedEnvironment.metrics
-});
-clippedEnvironment.body.appendChild(clippedScroller);
-clippedScroller.appendChild(clippedMessage);
-clippedEnvironment.candidates.push(clippedScroller);
-runScript(clippedEnvironment);
-documentTouch(clippedEnvironment, clippedMessage);
-documentMove(clippedEnvironment);
-const clippedDot = dotIn(clippedEnvironment);
-clippedDot._listeners.get("touchstart")[0].handler(dotEvent(clippedDot));
-clippedEnvironment.runTimersWithDelay(360);
-assert.equal(
-  clippedScroller.style["overflow-y"],
-  "auto",
-  "the long press must persistently repair a clipped Work scroller"
-);
-assert.equal(
-  clippedScroller.getAttribute("data-gptweb-scroll-repaired"),
-  "true"
-);
+for (const forbidden of ["touchstart", "touchmove", "touchend", "scroll"]) {
+  assert.equal(immediate.documentListeners.has(forbidden), false);
+  assert.equal(immediate.windowListeners.has(forbidden), false);
+}
 
-const fallbackEnvironment = makeEnvironment("chatgpt.com");
-fallbackEnvironment.document.documentElement.scrollHeight = 1400;
-const fallbackScroller = makeElement({
-  parentElement: fallbackEnvironment.body,
-  clientHeight: 500,
-  clientWidth: 400,
-  scrollHeight: 1900,
-  overflowY: "hidden",
-  role: "main",
-  metrics: fallbackEnvironment.metrics
-});
-const fallbackTouchTarget = makeElement({
-  parentElement: fallbackEnvironment.body,
-  clientHeight: 100,
-  clientWidth: 100,
-  scrollHeight: 100,
-  metrics: fallbackEnvironment.metrics
-});
-fallbackEnvironment.body.appendChild(fallbackScroller);
-fallbackEnvironment.body.appendChild(fallbackTouchTarget);
-fallbackEnvironment.candidates.push(fallbackScroller);
-runScript(fallbackEnvironment);
-documentTouch(fallbackEnvironment, fallbackTouchTarget);
-documentMove(fallbackEnvironment);
-assert.equal(
-  fallbackEnvironment.metrics.selectorScans,
-  0,
-  "a vertical gesture must not run the expensive document-wide fallback"
-);
-const fallbackDot = dotIn(fallbackEnvironment);
-fallbackDot._listeners.get("touchstart")[0].handler(dotEvent(fallbackDot));
-assert.equal(
-  fallbackEnvironment.metrics.selectorScans,
-  0,
-  "touching the repair dot must not eagerly scan the document"
-);
-fallbackEnvironment.runTimersWithDelay(360);
-assert.equal(
-  fallbackEnvironment.metrics.selectorScans,
-  1,
-  "the document-wide fallback should run only after the repair long press"
-);
-assert.equal(
-  fallbackScroller.getAttribute("data-gptweb-scroll-repaired"),
-  "true",
-  "the deferred fallback must still repair the inner Work scroller"
-);
+const flushesBeforeReuse = immediate.metrics.layoutFlushes;
+immediate.window.__gptwebRepairScroll();
+assert.equal(immediate.metrics.layoutFlushes, flushesBeforeReuse);
 
-const safariEnvironment = makeEnvironment("chatgpt.com");
-const safariScroller = makeElement({
-  parentElement: safariEnvironment.body,
-  clientHeight: 500,
-  clientWidth: 400,
-  scrollHeight: 1600,
-  overflowY: "auto",
-  role: "main",
-  metrics: safariEnvironment.metrics
-});
-const safariMessage = makeElement({
-  parentElement: safariScroller,
-  clientHeight: 120,
-  clientWidth: 380,
-  scrollHeight: 120,
-  metrics: safariEnvironment.metrics
-});
-safariEnvironment.body.appendChild(safariScroller);
-safariScroller.appendChild(safariMessage);
-runScript(safariEnvironment, safariScript);
-assert.equal(dotIn(safariEnvironment), undefined);
-const safariTouchMetrics = { ...safariEnvironment.metrics };
-documentTouch(safariEnvironment, safariMessage);
-assert.deepEqual(safariEnvironment.metrics, safariTouchMetrics);
-documentMove(safariEnvironment);
-assert.ok(dotIn(safariEnvironment));
+workScroller.isConnected = false;
+const replacement = createWorkScroller(immediate, { overflowY: "hidden" });
+immediate.window.__gptwebRepairScroll();
+assert.equal(replacement.getAttribute("data-gptweb-scroll-repaired"), "true");
+assert.equal(immediate.metrics.layoutFlushes, flushesBeforeReuse + 1);
+
+const loading = makeEnvironment({ readyState: "loading" });
+const loadingScroller = createWorkScroller(loading);
+install(loading);
+assert.equal(loadingScroller.getAttribute("data-gptweb-scroll-repaired"), null);
+assert.equal(loading.metrics.selectorScans, 0);
+assert.equal(loading.documentListeners.get("DOMContentLoaded").configuration.once, true);
+loading.documentListeners.get("DOMContentLoaded").handler();
+assert.equal(loadingScroller.getAttribute("data-gptweb-scroll-repaired"), "true");
+
+const delayed = makeEnvironment();
+install(delayed);
+assert.equal(delayed.observers.length, 1);
+assert.equal(delayed.observers[0].target, delayed.main);
+assert.equal(delayed.observers[0].configuration.subtree, true);
+const delayedScroller = createWorkScroller(delayed, { overflowY: "clip" });
+delayed.observers[0].trigger();
+assert.equal(delayed.runNextTimer(), true);
+assert.equal(delayedScroller.getAttribute("data-gptweb-scroll-repaired"), "true");
+assert.equal(delayed.observers[0].connected, false);
+assert.equal(delayed.timers.size, 0, "Successful repair must cancel every pending retry");
+
+const empty = makeEnvironment();
+install(empty);
+let retries = 0;
+while (empty.runNextTimer()) {
+  retries += 1;
+  assert.ok(retries <= 12, "Observer retries were not bounded");
+}
+assert.equal(empty.metrics.selectorScans, 12);
+assert.equal(empty.observers[0].connected, false);
+assert.equal(empty.timers.size, 0);
+
+const excluded = makeEnvironment({ hostname: "example.com" });
+install(excluded);
+assert.equal(excluded.document.documentElement.children.length, 0);
+assert.equal(excluded.metrics.selectorScans, 0);
+
+const safari = makeEnvironment();
+const safariScroller = createWorkScroller(safari);
+install(safari, safariScript);
+assert.equal(safariScroller.getAttribute("data-gptweb-scroll-repaired"), "true");
+assert.equal(safari.metrics.layoutFlushes, 1);
+assert.equal(safari.timers.size, 0);
 
 console.log(
-  "Lazy Work repair, layout-free touch/scroll paths, target reuse, and Safari parity checks passed."
+  "Automatic one-shot Work repair, bounded DOM observation, native inertia, " +
+  "document_start iframe coverage, zero touch/scroll hooks, and Safari parity passed."
 );

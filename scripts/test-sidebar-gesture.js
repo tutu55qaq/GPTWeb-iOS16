@@ -4,230 +4,113 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const projectRoot = path.resolve(__dirname, "..");
-const swiftSource = fs.readFileSync(
-  path.join(projectRoot, "GPTWeb", "WebViewController.swift"),
+const source = fs.readFileSync(
+  path.join(__dirname, "..", "GPTWeb", "WebViewController.swift"),
   "utf8"
 );
 
-const declaration = 'private static let sidebarGestureScript = """';
-const scriptStart = swiftSource.indexOf(declaration);
-assert.notEqual(scriptStart, -1, "sidebarGestureScript declaration is missing");
-const contentStart = swiftSource.indexOf("\n", scriptStart) + 1;
-const contentEnd = swiftSource.indexOf('\n    """', contentStart);
-assert.notEqual(contentEnd, -1, "sidebarGestureScript terminator is missing");
-const script = swiftSource
-  .slice(contentStart, contentEnd)
-  .split("\n")
-  .map((line) => line.startsWith("    ") ? line.slice(4) : line)
-  .join("\n");
+function extractScript(name) {
+  const declaration = 'private static let ' + name + ' = """';
+  const start = source.indexOf(declaration);
+  assert.notEqual(start, -1, name + " declaration is missing");
+  const contentStart = source.indexOf("\n", start) + 1;
+  const end = source.indexOf('\n    """', contentStart);
+  assert.notEqual(end, -1, name + " terminator is missing");
+  return source.slice(contentStart, end)
+    .split("\n")
+    .map((line) => line.startsWith("    ") ? line.slice(4) : line)
+    .join("\n");
+}
 
-new Function("window", "document", "MouseEvent", "KeyboardEvent", script);
+const openScript = extractScript("openSidebarScript");
+const closeScript = extractScript("closeSidebarScript");
 
 for (const marker of [
-  'data-testid="open-sidebar-button"',
-  'data-testid="close-sidebar-button"',
-  "touch.clientX <= 36",
-  "deltaX >= 18",
-  "deltaX <= -18",
-  "requestIdleCallback",
-  "will-change: transform, opacity"
+  "UIScreenEdgePanGestureRecognizer",
+  "UIPanGestureRecognizer",
+  "configureNativeSidebarGestures()",
+  "openGesture.edges = .left",
+  "openGesture.cancelsTouchesInView = false",
+  "closeGesture.cancelsTouchesInView = false",
+  "closeGesture.maximumNumberOfTouches = 1",
+  "horizontalDistance >= 18",
+  "abs(translation.y) * 1.35",
+  "velocity.x > 0",
+  "velocity.x < 0",
+  "shouldRecognizeSimultaneouslyWith",
+  "opening ? Self.openSidebarScript : Self.closeSidebarScript",
+  "webView.allowsBackForwardNavigationGestures = false"
 ]) {
-  assert.ok(script.includes(marker), `sidebar gesture is missing: ${marker}`);
+  assert.ok(source.includes(marker), "Native sidebar gesture is missing: " + marker);
 }
-assert.doesNotMatch(
-  script,
-  /preventDefault/,
-  "sidebar gestures must not cancel native vertical scrolling"
-);
-assert.match(
-  swiftSource,
-  /webView\.allowsBackForwardNavigationGestures = false/
-);
-assert.match(swiftSource, /source: Self\.sidebarGestureScript/);
 
-const listeners = new Map();
+assert.doesNotMatch(source, /sidebarGestureScript/);
+assert.doesNotMatch(source, /source:\s*Self\.openSidebarScript/);
+assert.doesNotMatch(source, /source:\s*Self\.closeSidebarScript/);
+
+for (const script of [openScript, closeScript]) {
+  new Function("document", script);
+  assert.doesNotMatch(script, /addEventListener/);
+  assert.doesNotMatch(script, /preventDefault/);
+  assert.doesNotMatch(script, /getBoundingClientRect|getComputedStyle/);
+  assert.doesNotMatch(script, /querySelectorAll/);
+}
+
 let sidebarOpen = false;
-let pointerPrimeCount = 0;
-const metrics = {
-  layoutReads: 0,
-  styleReads: 0,
-  selectorScans: 0
-};
+let selectorReads = 0;
 
-function makeControl(kind) {
-  return {
-    isConnected: true,
-    textContent: kind === "open" ? "Open sidebar" : "Close sidebar",
-    getAttribute(name) {
-      if (name === "data-testid") return `${kind}-sidebar-button`;
-      if (name === "aria-label") return this.textContent;
-      if (name === "aria-expanded" && kind === "open") {
-        return sidebarOpen ? "true" : "false";
-      }
-      return null;
-    },
-    getBoundingClientRect() {
-      metrics.layoutReads += 1;
-      return {
-        top: 20,
-        left: 10,
-        width: 44,
-        height: 44
-      };
-    },
-    click() {
-      sidebarOpen = kind === "open";
-    },
-    dispatchEvent() {
-      pointerPrimeCount += 1;
-      return true;
-    }
-  };
-}
-
-const openButton = makeControl("open");
-const closeButton = makeControl("close");
-const sidebar = {
-  isConnected: true,
-  getBoundingClientRect() {
-    metrics.layoutReads += 1;
-    return {
-      top: 0,
-      left: 0,
-      width: 320,
-      height: 800
-    };
+const openButton = {
+  disabled: false,
+  click() {
+    sidebarOpen = true;
   }
 };
-const head = {
-  appendChild() {}
+
+const closeButton = {
+  disabled: false,
+  click() {
+    sidebarOpen = false;
+  }
 };
-const documentElement = {
-  appendChild() {}
+
+const sidebar = {
+  querySelector() {
+    return closeButton;
+  }
 };
+
 const document = {
-  head,
-  documentElement,
-  createElement() {
-    return {
-      id: "",
-      textContent: ""
-    };
-  },
   querySelector(selector) {
+    selectorReads += 1;
     if (selector.includes("open-sidebar-button")) return openButton;
     if (selector.includes("close-sidebar-button")) {
       return sidebarOpen ? closeButton : null;
     }
     return null;
   },
-  querySelectorAll() {
-    metrics.selectorScans += 1;
-    return sidebarOpen
-      ? [openButton, closeButton]
-      : [openButton];
-  },
   getElementById(id) {
-    return id === "stage-popover-sidebar" && sidebarOpen
-      ? sidebar
-      : null;
-  },
-  addEventListener(name, handler, options = {}) {
-    listeners.set(name, { handler, options });
-  },
-  dispatchEvent() {
-    sidebarOpen = false;
-    return true;
+    return id === "stage-popover-sidebar" && sidebarOpen ? sidebar : null;
   }
 };
-const window = {
-  location: { hostname: "chatgpt.com" },
-  getComputedStyle() {
-    metrics.styleReads += 1;
-    return {
-      display: "block",
-      visibility: "visible"
-    };
-  },
-  requestIdleCallback(callback) {
-    callback();
-    return 1;
-  },
-  setTimeout(callback) {
-    callback();
-    return 1;
-  }
-};
-class MouseEvent {
-  constructor(type, options) {
-    this.type = type;
-    this.options = options;
-  }
-}
-class KeyboardEvent extends MouseEvent {}
 
-new Function(
-  "window",
-  "document",
-  "MouseEvent",
-  "KeyboardEvent",
-  script
-)(window, document, MouseEvent, KeyboardEvent);
+const open = new Function("document", "return " + openScript);
+const close = new Function("document", "return " + closeScript);
 
-for (const name of ["touchstart", "touchmove", "touchend", "touchcancel"]) {
-  assert.ok(listeners.has(name), `${name} listener is missing`);
-  assert.equal(listeners.get(name).options.passive, true);
-}
-assert.ok(pointerPrimeCount >= 2, "idle pointer priming did not run");
-const initialPrimeCount = pointerPrimeCount;
+assert.equal(open(document), true);
+assert.equal(sidebarOpen, true, "Native left-edge gesture command did not open the sidebar");
+assert.equal(close(document), true);
+assert.equal(sidebarOpen, false, "Native left-swipe command did not close the sidebar");
 
-const pageTarget = {
-  closest() {
-    return null;
-  }
-};
-function touchEvent(x, y) {
-  return {
-    target: pageTarget,
-    touches: [{ clientX: x, clientY: y }]
-  };
-}
+const settledReads = selectorReads;
+assert.equal(close(document), false);
+assert.equal(sidebarOpen, false);
+assert.ok(selectorReads - settledReads <= 2);
 
-listeners.get("touchstart").handler(touchEvent(8, 300));
-assert.deepEqual(
-  metrics,
-  { layoutReads: 0, styleReads: 0, selectorScans: 0 },
-  "an edge touch must not force layout, read computed style, or scan controls"
-);
-assert.equal(
-  pointerPrimeCount,
-  initialPrimeCount,
-  "sidebar priming must not run again on the touch hot path"
-);
-listeners.get("touchmove").handler(touchEvent(30, 302));
-assert.equal(sidebarOpen, true, "left-edge right swipe did not open sidebar");
-
-listeners.get("touchstart").handler(touchEvent(300, 300));
-assert.deepEqual(
-  metrics,
-  { layoutReads: 0, styleReads: 0, selectorScans: 0 },
-  "sidebar-close detection must avoid synchronous layout reads"
-);
-listeners.get("touchmove").handler(touchEvent(275, 302));
-assert.equal(sidebarOpen, false, "right-to-left swipe did not close sidebar");
-
-listeners.get("touchstart").handler(touchEvent(8, 300));
-listeners.get("touchmove").handler(touchEvent(14, 340));
-assert.equal(sidebarOpen, false, "vertical scrolling opened the sidebar");
-
-listeners.get("touchstart").handler(touchEvent(200, 300));
-assert.deepEqual(
-  metrics,
-  { layoutReads: 0, styleReads: 0, selectorScans: 0 },
-  "ordinary page taps must not force layout or scan all sidebar buttons"
-);
+openButton.disabled = true;
+assert.equal(open(document), false);
+assert.equal(sidebarOpen, false);
 
 console.log(
-  "Layout-free sidebar gestures, cached controls, idle-only priming, and coexistence checks passed."
+  "Native UIKit sidebar gestures, direction gating, one-shot DOM commands, " +
+  "and zero webpage touch listeners passed."
 );

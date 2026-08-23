@@ -16,7 +16,8 @@ GPT 管理 GitHub 仓库并接管 GitHub Actions 云端编译、校验和发布 
 - 冷启动固定进入 `https://chatgpt.com/` 的空白新对话，不再自动恢复最后打开的长
   对话；只切到后台再回来时仍保持当前页面。
 - 关闭 WKWebView 默认的左缘后退手势：从屏幕左缘向右滑会打开聊天列表，列表打开后
-  向左滑会收起。手势监听保持被动，不取消上下滚动和 Work 页面触摸。
+  向左滑会收起。侧边栏识别完全由 UIKit 原生手势处理，不向网页注入触摸监听器，
+  也不取消上下滚动和 Work 页面触摸。
 - 使用 iOS 16.3 Mobile Safari User-Agent，降低网页对嵌入式浏览器的误判。
 - 仅对 `chatgpt.com`、OpenAI 登录域和登录所需身份提供商保持站内导航；普通外链在
   `SFSafariViewController` 中打开。
@@ -30,12 +31,12 @@ GPT 管理 GitHub 仓库并接管 GitHub Actions 云端编译、校验和发布 
   请使用系统分享菜单中的“打开方式 → ChatGPT”。
 - 输入区采用 16 pt 最小字号，避免聚焦编辑框时网页自动放大；交互控件启用
   `touch-action: manipulation`，减少误触延迟。
-- 保留 WebKit 原生惯性滚动，不接管页面的滚动手势；检测到 Work 嵌套对话的纵向
-  滑动后，右上角会短暂出现一个蓝色修复圆点。长按圆点会对当前容器执行一次局部
-  修复，随后继续使用原生滑动与 iOS 原生滚动条，静止时圆点自动隐藏。
+- 保留 WebKit 原生惯性滚动，不接管页面的滚动手势；页面加载或 Work 对话切换时
+  自动定位内部消息容器并执行一次局部兼容修复，无需圆点、长按或自定义滚动条。
+  修复完成后立即停止短暂观察，继续使用 iOS 原生滑动、惯性和滚动条。
 - 配套的独立 `SafariFixHost` IPA 内嵌 `SafariExtension.appex`；使用正常 Apple
   开发者签名安装并获得 `chatgpt.com` 网站权限后，会在系统 Safari 的主页面和
-  子 Frame 中提供同一套 Work 滚动修复圆点。
+  子 Frame 中提供同一套自动 Work 滚动修复。
 - TrollStore 版主程序不再嵌入 Safari 扩展，避免系统显示“插件已不可用”；它保持
   原 Bundle ID，可直接覆盖旧版本并保留 WebKit 登录状态。
 - 键盘可交互收起、返回手势、加载进度条、深色模式与 ProMotion 自适应高刷新率。
@@ -89,8 +90,7 @@ Safari Web Extension 不能作为一个裸 `.appex` 单独安装，所以本项�
 2. 选择“ChatGPT Work 滚动修复”并启用。
 3. 将 `chatgpt.com` 的网站访问权限设为“允许”。
 4. 完全退出并重新打开 Safari，刷新已经打开的 ChatGPT 标签页。
-5. 进入 Work 对话并做一次纵向滑动；右上角圆点出现后长按约 360 ms，看到圆点
-   放大并出现光圈后松手。
+5. 进入 Work 对话；页面会自动修复内部消息容器，然后直接使用原生滑动和系统滚动条。
 
 如果扩展仍不在设置中，先确认安装方式不是 TrollStore，再检查签名后的 IPA 中宿主
 Bundle ID 为 `com.example.gptweb.safarifix`，扩展 Bundle ID 为
@@ -98,8 +98,8 @@ Bundle ID 为 `com.example.gptweb.safarifix`，扩展 Bundle ID 为
 匹配的签名和描述文件。
 
 扩展使用 Safari 自己的 Cookie 与登录状态，不会读取或复制本应用 WebView 的 Cookie。
-它不拦截网络请求，只在 ChatGPT 页面中检查元素尺寸、滚动范围和父子关系，并为用户
-明确选中的容器写入滚动修复 CSS。
+它不拦截网络请求，只在 ChatGPT 页面加载时短暂检查元素尺寸、滚动范围和父子关系，
+并为识别出的内部消息容器写入滚动修复 CSS。
 
 这个限制不是本项目清单文件造成的。TrollStore 项目中已经长期存在同类报告，包括
 iOS 16.2 / TrollStore 2 下 Safari 扩展不出现在设置中的
@@ -116,7 +116,7 @@ iOS 16.2 / TrollStore 2 下 Safari 扩展不出现在设置中的
 `GPTWeb-unsigned.ipa`，不要卸载旧版，这样应用数据容器、Cookie 和登录状态都会
 保留。
 
-1. 覆盖安装 1.2.6。
+1. 覆盖安装 1.2.8。
 2. 在 TrollStore 设置中执行 **Rebuild Icon Cache**。
 3. 结束多任务页面中旧的 ChatGPT 卡片，再重新打开应用。
 4. 如果多任务左上角仍是旧图标，执行一次 Respring；仍未刷新时再重启设备。
@@ -193,41 +193,26 @@ JavaScript/CSS 特性，也不能保证一定快于一个全新、无其他标�
 站点存储或聊天记录。应用被从多任务划掉后再次打开会加载 ChatGPT 根页面；应用只是
 进入后台时不会重置正在查看的对话。
 
-这一版还移除了启动阶段用于“预热”的第二个临时 `WKWebView` 和额外 `URLCache`，
-关闭链接长按预览并使用不透明 WebView 以降低合成负担。Work 修复圆点不再用
-`MutationObserver` 监听聊天流式输出产生的每一次 DOM 变化，而是在实际触摸、滚动
-时重新确认目标。`CADisableMinimumFrameDurationOnPhone` 保持 `true`：按照 Apple
-的定义，这只是允许系统在有余量时使用高于默认值的刷新率，并不要求网页持续以
-120 Hz 渲染，因此继续交给 ProMotion 动态调节。参见 Apple 的
+1.2.8 从架构上删除了网页侧边栏触摸脚本、修复圆点、旧版自定义滚动条和所有历史
+滚动接管实现。应用只创建一个持久化 `WKWebView`，不预热第二个网页进程，不附加
+额外 `URLCache`，关闭链接长按预览并使用不透明 WebView 降低合成负担。
+
+侧边栏现在使用 UIKit 的 `UIScreenEdgePanGestureRecognizer` 和
+`UIPanGestureRecognizer`：只有原生系统已经确认水平意图且移动超过 18 pt 时，才
+向网页发送一次打开或关闭按钮命令。普通点击、纵向滚动、Work 对话和流式输出期间
+没有任何网页 `touchstart`、`touchmove` 或 `scroll` 监听器；手势允许和 WebKit
+原生滚动识别器共存，不等待手指离屏。
+
+滚动兼容脚本提前到 `document_start` 注入页面及子 Frame。加载完成后，它只在
+最多 48 个候选元素中定位消息容器，写入一次兼容样式并立即退出。如果 React 页面
+尚未创建容器，只会对当前 `main` 节点进行最长 2.8 秒、最多 12 次的短暂观察；找到
+目标后立即断开观察器和定时器，不会持续监听聊天流式输出。页面路由变化时由原生
+URL 观察触发一次重新检查，Safari 扩展也在页面加载时执行相同脚本。
+
+`CADisableMinimumFrameDurationOnPhone` 保持 `true`：按照 Apple 的定义，这只是
+允许系统在有余量时使用高于默认值的刷新率，不要求网页持续以 120 Hz 渲染，因此
+继续交给 ProMotion 动态调节。参见 Apple 的
 [`CADisableMinimumFrameDurationOnPhone` 文档](https://developer.apple.com/documentation/bundleresources/information-property-list/cadisableminimumframedurationonphone)。
-
-1.2.6 将 `allowsBackForwardNavigationGestures` 关闭，避免系统把左缘右滑解释成网页
-后退。主 Frame 中的轻量脚本只记录单指触摸：起点在左侧 36 pt 内、水平位移达到
-18 pt 且明显大于纵向位移时，立即触发 ChatGPT 的
-`open-sidebar-button`；侧栏已打开时同样阈值的向左滑触发
-`close-sidebar-button`。监听器全部使用 `passive: true`，不调用
-`preventDefault()`，因此纵向滚动仍由 WebKit 原生处理。
-
-为了缩短点击或滑动后侧栏首次出现的等待，页面空闲时会向打开按钮发送一次
-pointer/mouse hover 预热；`#stage-popover-sidebar` 使用 `will-change` 合成提示。
-横向意图一旦在 18 pt 被确认就开始打开动画，不等待手指离屏。选择器失效时还会根据
-英文/中文无障碍标签寻找左上角菜单按钮，相关语法、方向、阈值、预热和纵向手势共存
-由 `scripts/test-sidebar-gesture.js` 做回归检查。
-
-1.2.7 进一步把触摸和滚动的同步布局工作移出热路径。Work 修复脚本的 `touchstart`
-现在只记录触点及原始目标，不再向上遍历 DOM，也不再扫描整个页面；只有明确检测到
-纵向移动后，才通过 `event.composedPath()` 或父节点链寻找消息容器。已经选中的内部
-容器只要仍连接在页面中，就会在后续手势中直接复用。正常点击、横向侧栏手势和原生
-`scroll` 事件不会再调用 `getBoundingClientRect()`、`getComputedStyle()`，也不会
-触发最多 400 个节点的全页扫描。这个昂贵的兜底只会在用户长按修复圆点、且当前目标
-仅是外层页面时运行。
-
-修复圆点及其专用样式改为首次纵向滑动时再创建；仍需覆盖所有 ChatGPT 子 Frame，
-但不会在页面加载时为每个 Frame 创建交互控件。侧栏脚本缓存打开/关闭按钮，状态判断
-不读取布局，hover 预热只在页面空闲时运行一次，不再占用手指按下的时间。Safari
-Web Extension 同步使用这套延迟查找和滚动目标复用逻辑。对应测试会实际记录模拟 DOM
-的布局读取、样式读取和全页选择器扫描次数，确保普通触摸、后续滚动和已缓存容器的
-手势维持零额外同步布局读取。
 
 ## Work 模式滚动修复原理
 
@@ -245,20 +230,19 @@ Web Extension 同步使用这套延迟查找和滚动目标复用逻辑。对应
 当前的嵌套布局、动态 DOM 和 iOS 16.3 WebKit 的滚动层/手势判定组合在一起触发了
 兼容问题。
 
-### 长按圆点时发生了什么
+### 自动修复时发生了什么
 
-1. **被动检测手势。** 页面上的 `touchstart`/`touchmove` 监听器使用
-   `passive: true`；按下时只保存触点，直到确认纵向滑动才查找目标并创建右上角
-   圆点，不取消页面原本的触摸事件。
-2. **锁定实际消息容器。** 脚本优先复用仍然包含触点的已知容器，否则通过事件路径
-   或父节点链查找有真实滚动范围
-   （`scrollHeight > clientHeight`）的父元素，优先选择
-   `overflow-y: auto/scroll/overlay` 的原生滚动容器；对 Work 中使用
-   `hidden/clip` 的异常容器，再结合 `main`、`dialog`、滚动类名、可见面积和滚动范围
-   评分。全页兜底扫描只会在长按修复时运行；外层页面的橡皮筋回弹不会覆盖已经选中
-   的内部容器。
-3. **等待明确确认。** 只有在圆点上持续按住约 360 ms 才执行修复，普通浏览、普通
-   滑动和误触不会改写页面样式。
+1. **提前注入，不接管触摸。** `WKUserScript` 与 Safari content script 都在
+   `document_start` 装载，只添加基础兼容样式和页面就绪回调，不安装
+   `touchstart`、`touchmove`、`touchend` 或 `scroll` 监听器。
+2. **一次性定位内部消息容器。** 页面就绪时从屏幕中部三个采样点向上追踪父节点，
+   再结合 `main`、`dialog`、`data-scroll-root` 和少量滚动类选择器，最多检查
+   48 个候选元素。依据真实滚动范围
+   （`scrollHeight > clientHeight`）、可见面积、屏幕位置、滚动类名和
+   `overflow-y` 为候选评分，优先选择内部消息列表，不修复外层页面、侧边栏或代码块。
+3. **只在需要时短暂等待 React。** 如果页面还没有生成目标，临时观察当前 `main`
+   节点，最多 2.8 秒、12 次；找到目标后立即停止观察并取消定时器。已带有
+   `data-gptweb-scroll-repaired="true"` 的元素不会重复写入样式。
 4. **重新声明滚动条件。** 脚本只对选中的元素写入以下内联样式：
 
    ```css
@@ -279,15 +263,14 @@ Web Extension 同步使用这套延迟查找和滚动目标复用逻辑。对应
    前提交新的布局和滚动层状态。脚本随后停止介入，由 iOS 原生触摸滚动、惯性和系统
    滚动条继续工作。
 
-脚本不会写入 `scrollTop`，不会模拟手指位移，也没有自定义惯性动画，因此不会再产生
+脚本不会写入 `scrollTop`，不会模拟手指位移，也没有自定义惯性动画，因此不会产生
 此前自定义滚动条“一顿一顿”的手感。修复成功的元素会写入
-`data-gptweb-scroll-repaired="true"` 标记，避免重复弹出圆点；如果 ChatGPT 后续
-重新创建了 Work 消息容器，新元素没有这个标记，纵向滑动时圆点会再次出现，可重新
-长按修复。
+`data-gptweb-scroll-repaired="true"` 标记；如果 ChatGPT 随路由变化重新创建 Work
+消息容器，原生 URL 观察会触发一次针对新容器的自动检查。
 
-对应实现位于 `GPTWeb/WebViewController.swift` 的 `workRepairDotScript`，无
-`scrollTop` 接管、目标锁定和持久修复行为由 `scripts/test-scroll-fix.js` 做静态
-回归检查。
+对应实现位于 `GPTWeb/WebViewController.swift` 的 `automaticScrollRepairScript`。
+`scripts/test-scroll-fix.js` 会验证自动修复、短暂观察、iframe 覆盖、Safari 脚本
+一致性、零触摸/滚动监听，以及不写入 `scrollTop` 的原生惯性保护。
 
 ### 能否在 iPhone 的 Safari 中使用
 
@@ -299,7 +282,7 @@ Safari Web Extension，在用户授予网站权限后由 Safari 注入同一套�
 
 - **推荐：独立 Safari Web Extension 宿主。** iOS 15 起支持 Safari Web
   Extension。本项目已经把同一段修复逻辑作为只匹配 ChatGPT 域名的 content
-  script，在页面和子 Frame 加载后自动注入。正常开发者签名安装
+  script，在页面和子 Frame 的 `document_start` 自动注入。正常开发者签名安装
   `SafariFixHost` 后，需要在“设置 → Safari → 扩展”中启用，并允许它访问
   `chatgpt.com`。这是长期使用最可靠的方案，也能继续保持 Safari 自己的 Cookie、
   登录状态、下载和标签页功能。

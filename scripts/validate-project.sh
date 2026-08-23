@@ -65,16 +65,16 @@ manifest = json.loads(
 )
 if manifest.get("manifest_version") != 2:
     raise SystemExit("Safari Extension 必须使用兼容 iOS 16 的 Manifest V2")
-if manifest.get("version") != "1.2.7":
-    raise SystemExit("Safari Extension 版本号不是 1.2.7")
+if manifest.get("version") != "1.2.8":
+    raise SystemExit("Safari Extension 版本号不是 1.2.8")
 content_scripts = manifest.get("content_scripts", [])
 if len(content_scripts) != 1:
     raise SystemExit("Safari Extension content_scripts 配置错误")
 content_script = content_scripts[0]
 if content_script.get("js") != ["content.js"]:
     raise SystemExit("Safari Extension 没有加载 content.js")
-if content_script.get("run_at") != "document_end":
-    raise SystemExit("Safari Extension 必须在 document_end 注入")
+if content_script.get("run_at") != "document_start":
+    raise SystemExit("Safari Extension 必须在 document_start 注入")
 if content_script.get("all_frames") is not True:
     raise SystemExit("Safari Extension 必须覆盖 ChatGPT 子 Frame")
 if "https://chatgpt.com/*" not in content_script.get("matches", []):
@@ -146,10 +146,10 @@ if "SAFARI_FIX_BUNDLE_IDENTIFIER = com.example.gptweb.safarifix" not in base_con
     raise SystemExit("Base.xcconfig 的 Safari 修复宿主 Bundle ID 不正确")
 if "PRODUCT_BUNDLE_IDENTIFIER = $(HOST_BUNDLE_IDENTIFIER)" not in base_config:
     raise SystemExit("主应用没有使用宿主 Bundle ID")
-if "MARKETING_VERSION = 1.2.7" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.7")
-if "CURRENT_PROJECT_VERSION = 14" not in base_config:
-    raise SystemExit("Base.xcconfig 的更新构建号不是 14")
+if "MARKETING_VERSION = 1.2.8" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新版本号不是 1.2.8")
+if "CURRENT_PROJECT_VERSION = 15" not in base_config:
+    raise SystemExit("Base.xcconfig 的更新构建号不是 15")
 if 'EXTRA_SETTINGS+=("HOST_BUNDLE_IDENTIFIER=$BUNDLE_ID")' not in build_script:
     raise SystemExit("自定义主应用 Bundle ID 没有传给 Xcode")
 if '"SAFARI_FIX_BUNDLE_IDENTIFIER=$SAFARI_FIX_BUNDLE_ID"' not in build_script:
@@ -207,8 +207,12 @@ swift = (root / "GPTWeb/WebViewController.swift").read_text(encoding="utf-8")
 scene_swift = (root / "GPTWeb/SceneDelegate.swift").read_text(encoding="utf-8")
 app_swift = (root / "GPTWeb/AppDelegate.swift").read_text(encoding="utf-8")
 for marker in (
-    'source: Self.workRepairDotScript',
-    'source: Self.sidebarGestureScript',
+    'source: Self.automaticScrollRepairScript',
+    'injectionTime: .atDocumentStart',
+    'UIScreenEdgePanGestureRecognizer',
+    'UIPanGestureRecognizer',
+    'scheduleAutomaticScrollRepair()',
+    'window.__gptwebRepairScroll',
     'data-gptweb-scroll-repaired',
     'nsError.domain == "WebKitErrorDomain" && nsError.code == 102',
     'value(forHTTPHeaderField: "Content-Disposition")',
@@ -246,9 +250,14 @@ for removed_marker in (
     "UIDropInteraction",
     "loadFileRepresentation",
     "blockUnsafeWebFileDropScript",
+    "sidebarGestureScript",
+    "workRepairDotScript",
+    "compatibilityScript",
+    "scrollbarScript",
+    "gptweb-work-repair-dot",
 ):
     if removed_marker in swift:
-        raise SystemExit(f"WebViewController.swift 仍包含已放弃的拖放代码：{removed_marker}")
+        raise SystemExit(f"WebViewController.swift 仍包含已废弃代码：{removed_marker}")
 for removed_marker in (
     "persistCurrentURL",
     "Keys.lastURL",

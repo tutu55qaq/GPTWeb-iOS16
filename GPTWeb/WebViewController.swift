@@ -26,10 +26,15 @@ final class WebViewController: UIViewController {
     private var pendingDocumentErrorMessage: String?
     private var isAutomaticallyAttachingDocuments = false
     private var automaticAttachmentAttemptCount = 0
+    private var automaticScrollRepairWorkItem: DispatchWorkItem?
+    private var sidebarGestureDidTrigger = false
+    private weak var sidebarOpenGesture: UIScreenEdgePanGestureRecognizer?
+    private weak var sidebarCloseGesture: UIPanGestureRecognizer?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         configureView()
+        configureNativeSidebarGestures()
         configureObservers()
         configureConnectivity()
         removeExpiredIncomingDocuments()
@@ -44,6 +49,7 @@ final class WebViewController: UIViewController {
     }
 
     deinit {
+        automaticScrollRepairWorkItem?.cancel()
         observations.forEach { $0.invalidate() }
         connectivityMonitor.cancel()
     }
@@ -619,13 +625,8 @@ final class WebViewController: UIViewController {
 
         let contentController = WKUserContentController()
         contentController.addUserScript(WKUserScript(
-            source: Self.sidebarGestureScript,
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
-        ))
-        contentController.addUserScript(WKUserScript(
-            source: Self.workRepairDotScript,
-            injectionTime: .atDocumentEnd,
+            source: Self.automaticScrollRepairScript,
+            injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         ))
         configuration.userContentController = contentController
@@ -698,6 +699,92 @@ final class WebViewController: UIViewController {
                 self?.progressView.isHidden = !webView.isLoading
             }
         })
+
+        observations.append(webView.observe(\.url, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.scheduleAutomaticScrollRepair()
+            }
+        })
+    }
+
+    private func configureNativeSidebarGestures() {
+        let openGesture = UIScreenEdgePanGestureRecognizer(
+            target: self,
+            action: #selector(handleSidebarOpenGesture(_:))
+        )
+        openGesture.edges = .left
+        openGesture.cancelsTouchesInView = false
+        openGesture.delegate = self
+        view.addGestureRecognizer(openGesture)
+        sidebarOpenGesture = openGesture
+
+        let closeGesture = UIPanGestureRecognizer(
+            target: self,
+            action: #selector(handleSidebarCloseGesture(_:))
+        )
+        closeGesture.maximumNumberOfTouches = 1
+        closeGesture.cancelsTouchesInView = false
+        closeGesture.delegate = self
+        view.addGestureRecognizer(closeGesture)
+        sidebarCloseGesture = closeGesture
+    }
+
+    @objc private func handleSidebarOpenGesture(
+        _ gesture: UIScreenEdgePanGestureRecognizer
+    ) {
+        handleSidebarGesture(gesture, opening: true)
+    }
+
+    @objc private func handleSidebarCloseGesture(
+        _ gesture: UIPanGestureRecognizer
+    ) {
+        handleSidebarGesture(gesture, opening: false)
+    }
+
+    private func handleSidebarGesture(
+        _ gesture: UIPanGestureRecognizer,
+        opening: Bool
+    ) {
+        switch gesture.state {
+        case .began, .changed:
+            guard !sidebarGestureDidTrigger else { return }
+            let translation = gesture.translation(in: view)
+            let horizontalDistance = opening ? translation.x : -translation.x
+            guard horizontalDistance >= 18,
+                  horizontalDistance > abs(translation.y) * 1.35 else {
+                return
+            }
+            sidebarGestureDidTrigger = true
+            webView.evaluateJavaScript(
+                opening ? Self.openSidebarScript : Self.closeSidebarScript,
+                completionHandler: nil
+            )
+
+        case .ended, .cancelled, .failed:
+            sidebarGestureDidTrigger = false
+
+        default:
+            break
+        }
+    }
+
+    private func scheduleAutomaticScrollRepair() {
+        automaticScrollRepairWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  let host = self.webView.url?.host?.lowercased(),
+                  host == "chatgpt.com" ||
+                    host.hasSuffix(".chatgpt.com") ||
+                    host == "chat.openai.com" else {
+                return
+            }
+            self.webView.evaluateJavaScript(
+                "window.__gptwebRepairScroll && window.__gptwebRepairScroll();",
+                completionHandler: nil
+            )
+        }
+        automaticScrollRepairWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: workItem)
     }
 
     private func configureConnectivity() {
@@ -943,1365 +1030,128 @@ final class WebViewController: UIViewController {
     })();
     """
 
-    private static let compatibilityScript = """
+    private static let openSidebarScript = """
     (function () {
-      var hostname = String(window.location.hostname || '').toLowerCase();
-      var isChatGPTDocument = hostname === 'chatgpt.com' ||
-        hostname.slice(-12) === '.chatgpt.com' ||
-        hostname === 'chat.openai.com';
-      if (!isChatGPTDocument) return;
-      if (window.__gptwebIOS16CompatibilityInstalled) return;
-      window.__gptwebIOS16CompatibilityInstalled = true;
-
-      var style = document.createElement('style');
-      style.id = 'gptweb-ios16-compat';
-      style.textContent = [
-        'html { -webkit-text-size-adjust: 100%; overscroll-behavior-y: none; }',
-        'body { overscroll-behavior-y: none; }',
-        '@supports (-webkit-touch-callout: none) {',
-        '  textarea, input:not([type="checkbox"]):not([type="radio"]), [contenteditable="true"] {',
-        '    font-size: 16px !important;',
-        '  }',
-        '  button, a, [role="button"] { touch-action: manipulation; }',
-        '  [data-gptweb-scroll-fix="true"] {',
-        '    overflow-y: auto !important;',
-        '    -webkit-overflow-scrolling: auto !important;',
-        '    overscroll-behavior-y: contain !important;',
-        '    touch-action: pan-y !important;',
-        '    min-height: 0 !important;',
-        '  }',
-        '}'
-      ].join('\\n');
-      (document.head || document.documentElement).appendChild(style);
-
-      var gesture = null;
-      var fixedScrollers = [];
-
-      function parentElementAcrossShadowDOM(element) {
-        if (!element) return null;
-        if (element.parentElement) return element.parentElement;
-        var root = element.getRootNode ? element.getRootNode() : null;
-        return root && root.host ? root.host : null;
-      }
-
-      function isVisible(element) {
-        if (!element || element.nodeType !== 1) return false;
-        var rect = element.getBoundingClientRect();
-        var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-        var viewportWidth = window.innerWidth || document.documentElement.clientWidth;
-        return rect.height >= 96 &&
-          rect.width >= 120 &&
-          rect.bottom > 0 &&
-          rect.right > 0 &&
-          rect.top < viewportHeight &&
-          rect.left < viewportWidth;
-      }
-
-      function scrollRange(element) {
-        return Math.max(0, element.scrollHeight - element.clientHeight);
-      }
-
-      function overflowKind(element) {
-        var value = window.getComputedStyle(element).overflowY;
-        return value || 'visible';
-      }
-
-      function isNativeScroller(element) {
-        var overflow = overflowKind(element);
-        return overflow === 'auto' || overflow === 'scroll' || overflow === 'overlay';
-      }
-
-      function isBrokenScrollerCandidate(element) {
-        if (!isVisible(element) || scrollRange(element) < 12) return false;
-        var overflow = overflowKind(element);
-        if (overflow === 'hidden' || overflow === 'clip') return true;
-        var role = element.getAttribute('role') || '';
-        var name = String(element.className || '');
-        return element.tagName === 'MAIN' ||
-          role === 'main' ||
-          role === 'dialog' ||
-          name.indexOf('overflow') !== -1 ||
-          element.hasAttribute('data-scroll-root');
-      }
-
-      function rememberScroller(element) {
-        if (fixedScrollers.indexOf(element) === -1) fixedScrollers.push(element);
-        if (fixedScrollers.length > 12) fixedScrollers.shift();
-      }
-
-      function repairScroller(element) {
-        if (!element || !element.isConnected) return;
-        element.setAttribute('data-gptweb-scroll-fix', 'true');
-        element.style.setProperty('overflow-y', 'auto', 'important');
-        element.style.setProperty('-webkit-overflow-scrolling', 'auto', 'important');
-        element.style.setProperty('overscroll-behavior-y', 'contain', 'important');
-        element.style.setProperty('touch-action', 'pan-y', 'important');
-        void element.offsetHeight;
-        rememberScroller(element);
-      }
-
-      function nearestScroller(start) {
-        var element = start && start.nodeType === 1 ? start : start && start.parentElement;
-        var brokenCandidate = null;
-        var depth = 0;
-
-        while (element && element !== document.documentElement && depth < 40) {
-          if (isVisible(element) && scrollRange(element) >= 12) {
-            if (isNativeScroller(element)) return element;
-            if (!brokenCandidate && isBrokenScrollerCandidate(element)) {
-              brokenCandidate = element;
-            }
-          }
-          element = parentElementAcrossShadowDOM(element);
-          depth += 1;
-        }
-        return brokenCandidate;
-      }
-
-      function pointInside(rect, x, y) {
-        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-      }
-
-      function fallbackScroller(start, x, y) {
-        var selector = [
-          '[data-scroll-root]',
-          '[data-testid*="conversation"]',
-          '[data-testid*="thread"]',
-          '[data-testid*="message"]',
-          '[class*="overflow-y-auto"]',
-          '[class*="overflow-auto"]',
-          '[role="main"]',
-          '[role="dialog"]',
-          'main'
-        ].join(',');
-        var nodes = document.querySelectorAll(selector);
-        var best = null;
-        var bestScore = -1;
-        var count = Math.min(nodes.length, 300);
-
-        for (var index = 0; index < count; index += 1) {
-          var node = nodes[index];
-          if (!isVisible(node) || scrollRange(node) < 12) continue;
-          var rect = node.getBoundingClientRect();
-          var containsStart = start && node.contains(start);
-          var containsPoint = pointInside(rect, x, y);
-          if (!containsStart && !containsPoint) continue;
-
-          var score = 0;
-          if (containsStart) score += 120;
-          if (containsPoint) score += 80;
-          if (isNativeScroller(node)) score += 40;
-          if (overflowKind(node) === 'hidden' || overflowKind(node) === 'clip') score += 25;
-          score += Math.min(35, scrollRange(node) / 120);
-          score += Math.min(20, rect.height / 80);
-          if (score > bestScore) {
-            best = node;
-            bestScore = score;
-          }
-        }
-        return best;
-      }
-
-      function findScroller(start, x, y) {
-        var nested = nearestScroller(start) || fallbackScroller(start, x, y);
-        if (nested) return nested;
-        var root = document.scrollingElement || document.documentElement;
-        return root && scrollRange(root) >= 12 ? root : null;
-      }
-
-      function isEditableTarget(target) {
-        if (!target || !target.closest) return false;
-        return Boolean(target.closest(
-          'textarea,input,select,[contenteditable="true"],[role="textbox"],canvas'
-        ));
-      }
-
-      function beginGesture(event) {
-        if (event.touches.length !== 1 || isEditableTarget(event.target)) {
-          gesture = null;
-          return;
-        }
-        var touch = event.touches[0];
-        var scroller = findScroller(event.target, touch.clientX, touch.clientY);
-        if (!scroller) {
-          gesture = null;
-          return;
-        }
-
-        repairScroller(scroller);
-        gesture = {
-          scroller: scroller,
-          startX: touch.clientX,
-          startY: touch.clientY,
-          lastY: touch.clientY,
-          observedTop: scroller.scrollTop,
-          windowX: window.scrollX,
-          windowY: window.scrollY,
-          moveCount: 0,
-          nativeScrolling: false,
-          manualScrolling: false
-        };
-      }
-
-      function continueGesture(event) {
-        if (!gesture || event.touches.length !== 1) return;
-        var scroller = gesture.scroller;
-        if (!scroller || !scroller.isConnected) {
-          gesture = null;
-          return;
-        }
-
-        var touch = event.touches[0];
-        var totalX = touch.clientX - gesture.startX;
-        var totalY = touch.clientY - gesture.startY;
-        var deltaY = gesture.lastY - touch.clientY;
-        gesture.lastY = touch.clientY;
-
-        if (Math.abs(totalY) < 8 || Math.abs(totalY) <= Math.abs(totalX) * 1.1) return;
-
-        var currentTop = scroller.scrollTop;
-        if (!gesture.manualScrolling &&
-            Math.abs(currentTop - gesture.observedTop) > 0.5) {
-          gesture.nativeScrolling = true;
-        }
-        gesture.observedTop = currentTop;
-        gesture.moveCount += 1;
-
-        if (gesture.nativeScrolling) return;
-        if (!gesture.manualScrolling && gesture.moveCount < 2) return;
-
-        var maximum = scrollRange(scroller);
-        var nextTop = Math.max(0, Math.min(maximum, currentTop + deltaY));
-        if (Math.abs(nextTop - currentTop) > 0.5) {
-          scroller.scrollTop = nextTop;
-          gesture.observedTop = nextTop;
-          gesture.manualScrolling = true;
-        }
-
-        if (gesture.manualScrolling) {
-          if (window.scrollX !== gesture.windowX || window.scrollY !== gesture.windowY) {
-            window.scrollTo(gesture.windowX, gesture.windowY);
-          }
-          event.preventDefault();
-          event.stopPropagation();
-        }
-      }
-
-      function endGesture() {
-        gesture = null;
-      }
-
-      document.addEventListener('touchstart', beginGesture, {
-        capture: true,
-        passive: true
-      });
-      document.addEventListener('touchmove', continueGesture, {
-        capture: true,
-        passive: false
-      });
-      document.addEventListener('touchend', endGesture, {
-        capture: true,
-        passive: true
-      });
-      document.addEventListener('touchcancel', endGesture, {
-        capture: true,
-        passive: true
-      });
-
-      var refreshScheduled = false;
-      var observer = new MutationObserver(function () {
-        if (refreshScheduled) return;
-        refreshScheduled = true;
-        window.requestAnimationFrame(function () {
-          refreshScheduled = false;
-          fixedScrollers = fixedScrollers.filter(function (element) {
-            if (!element.isConnected) return false;
-            repairScroller(element);
-            return true;
-          });
-        });
-      });
-      observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true
-      });
-    })();
-    """
-
-    private static let scrollbarScript = """
-    (function () {
-      var hostname = String(window.location.hostname || '').toLowerCase();
-      var isChatGPTDocument = hostname === 'chatgpt.com' ||
-        hostname.slice(-12) === '.chatgpt.com' ||
-        hostname === 'chat.openai.com';
-      if (!isChatGPTDocument) return;
-      if (window.__gptwebIOS16ScrollbarInstalled) return;
-      window.__gptwebIOS16ScrollbarInstalled = true;
-
-      var style = document.createElement('style');
-      style.id = 'gptweb-ios16-scrollbar-style';
-      style.textContent = [
-        'html { -webkit-text-size-adjust: 100%; }',
-        '@supports (-webkit-touch-callout: none) {',
-        '  textarea, input:not([type="checkbox"]):not([type="radio"]), [contenteditable="true"] {',
-        '    font-size: 16px !important;',
-        '  }',
-        '  button, a, [role="button"] { touch-action: manipulation; }',
-        '}',
-        '#gptweb-scrollbar {',
-        '  position: fixed;',
-        '  z-index: 2147483646;',
-        '  top: calc(env(safe-area-inset-top, 0px) + 58px);',
-        '  bottom: calc(env(safe-area-inset-bottom, 0px) + 94px);',
-        '  right: 0;',
-        '  width: 22px;',
-        '  box-sizing: border-box;',
-        '  background: transparent;',
-        '  border: 0;',
-        '  box-shadow: none;',
-        '  pointer-events: none;',
-        '  touch-action: none !important;',
-        '  -webkit-touch-callout: none !important;',
-        '  -webkit-user-select: none;',
-        '  user-select: none;',
-        '}',
-        '#gptweb-scrollbar.gptweb-interactive {',
-        '  pointer-events: auto;',
-        '}',
-        '#gptweb-scrollbar-thumb {',
-        '  position: absolute;',
-        '  top: 0;',
-        '  right: 2px;',
-        '  width: 5px;',
-        '  min-height: 42px;',
-        '  border-radius: 999px;',
-        '  background: #0a84ff;',
-        '  box-shadow: none;',
-        '  opacity: 0;',
-        '  transition: opacity 150ms ease, width 120ms ease;',
-        '  will-change: transform, height;',
-        '}',
-        '#gptweb-scrollbar.gptweb-visible #gptweb-scrollbar-thumb {',
-        '  opacity: 0.94;',
-        '}',
-        '#gptweb-scrollbar.gptweb-fast #gptweb-scrollbar-thumb {',
-        '  width: 8px;',
-        '  opacity: 1;',
-        '}'
-      ].join('\\n');
-      (document.head || document.documentElement).appendChild(style);
-
-      var scrollbar = null;
-      var thumb = null;
-      var activeScroller = null;
-      var barGesture = null;
-      var updateScheduled = false;
-      var hideTimer = 0;
-      var inertiaFrame = 0;
-      var pendingContentTouch = null;
-      var lastContentSelectionAt = 0;
-
-      function parentElementAcrossShadowDOM(element) {
-        if (!element) return null;
-        if (element.parentElement) return element.parentElement;
-        var root = element.getRootNode ? element.getRootNode() : null;
-        return root && root.host ? root.host : null;
-      }
-
-      function scrollRange(element) {
-        return element ? Math.max(0, element.scrollHeight - element.clientHeight) : 0;
-      }
-
-      function overflowKind(element) {
-        var value = window.getComputedStyle(element).overflowY;
-        return value || 'visible';
-      }
-
-      function isVisible(element) {
-        if (!element || element.nodeType !== 1 || !element.isConnected) return false;
-        var rect = element.getBoundingClientRect();
-        var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-        var viewportWidth = window.innerWidth || document.documentElement.clientWidth;
-        return rect.height >= 96 &&
-          rect.width >= 120 &&
-          rect.bottom > 0 &&
-          rect.right > 0 &&
-          rect.top < viewportHeight &&
-          rect.left < viewportWidth;
-      }
-
-      function isScroller(element) {
-        if (!element || scrollRange(element) < 12) return false;
-        var root = document.scrollingElement || document.documentElement;
-        if (element === root) return true;
-        if (!isVisible(element)) return false;
-        var overflow = overflowKind(element);
-        var role = element.getAttribute('role') || '';
-        var name = String(element.className || '');
-        return overflow === 'auto' ||
-          overflow === 'scroll' ||
-          overflow === 'overlay' ||
-          overflow === 'hidden' ||
-          overflow === 'clip' ||
-          element.tagName === 'MAIN' ||
-          role === 'main' ||
-          role === 'dialog' ||
-          name.indexOf('overflow') !== -1 ||
-          element.hasAttribute('data-scroll-root');
-      }
-
-      function isNativeScroller(element) {
-        var overflow = overflowKind(element);
-        return overflow === 'auto' ||
-          overflow === 'scroll' ||
-          overflow === 'overlay';
-      }
-
-      function brokenScrollerScore(element) {
-        if (!isScroller(element) || isNativeScroller(element)) return -1;
-        var rect = element.getBoundingClientRect();
-        var role = element.getAttribute('role') || '';
-        var name = String(element.className || '');
-        var viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
-        var score = Math.min(100, rect.width * rect.height / viewportArea * 100);
-        score += Math.min(45, scrollRange(element) / 160);
-        if (element.tagName === 'MAIN' || role === 'main') score += 80;
-        if (role === 'dialog') score += 45;
-        if (element.hasAttribute('data-scroll-root')) score += 70;
-        if (name.indexOf('overflow') !== -1) score += 35;
-        return score;
-      }
-
-      function nearestScroller(start) {
-        var element = start && start.nodeType === 1 ? start : start && start.parentElement;
-        var brokenCandidate = null;
-        var brokenScore = -1;
-        var depth = 0;
-        while (element && depth < 40) {
-          if (isScroller(element)) {
-            if (isNativeScroller(element)) return element;
-            var score = brokenScrollerScore(element);
-            if (score > brokenScore) {
-              brokenCandidate = element;
-              brokenScore = score;
-            }
-          }
-          element = parentElementAcrossShadowDOM(element);
-          depth += 1;
-        }
-        return brokenCandidate;
-      }
-
-      function pointInside(rect, x, y) {
-        return x >= rect.left && x <= rect.right &&
-          y >= rect.top && y <= rect.bottom;
-      }
-
-      function fallbackScroller(start, x, y) {
-        var selector = [
-          '[data-scroll-root]',
-          '[data-testid*="conversation"]',
-          '[data-testid*="thread"]',
-          '[data-testid*="message"]',
-          '[class*="overflow-y-auto"]',
-          '[class*="overflow-auto"]',
-          '[role="main"]',
-          '[role="dialog"]',
-          'main'
-        ].join(',');
-        var nodes = document.querySelectorAll(selector);
-        var best = null;
-        var bestScore = -1;
-        var count = Math.min(nodes.length, 400);
-
-        for (var index = 0; index < count; index += 1) {
-          var node = nodes[index];
-          if (!isScroller(node)) continue;
-          var rect = node.getBoundingClientRect();
-          var containsStart = start && node.contains(start);
-          var containsPoint = pointInside(rect, x, y);
-          if (!containsStart && !containsPoint) continue;
-
-          var score = 0;
-          if (containsStart) score += 140;
-          if (containsPoint) score += 80;
-          if (isNativeScroller(node)) score += 90;
-          score += Math.max(0, brokenScrollerScore(node));
-          if (score > bestScore) {
-            best = node;
-            bestScore = score;
-          }
-        }
-        return best;
-      }
-
-      function findScroller(start, x, y) {
-        var nested = nearestScroller(start) || fallbackScroller(start, x, y);
-        if (nested) return nested;
-        var root = document.scrollingElement || document.documentElement;
-        return root && scrollRange(root) >= 12 ? root : null;
-      }
-
-      function defaultScroller() {
-        var selector = [
-          '[data-scroll-root]',
-          '[data-testid*="conversation"]',
-          '[data-testid*="thread"]',
-          '[data-testid*="message"]',
-          '[class*="overflow-y-auto"]',
-          '[class*="overflow-auto"]',
-          '[role="main"]',
-          '[role="dialog"]',
-          'main'
-        ].join(',');
-        var nodes = document.querySelectorAll(selector);
-        var best = null;
-        var bestScore = -1;
-        var viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
-        var count = Math.min(nodes.length, 300);
-
-        for (var index = 0; index < count; index += 1) {
-          var node = nodes[index];
-          if (!isScroller(node)) continue;
-          var rect = node.getBoundingClientRect();
-          var role = node.getAttribute('role') || '';
-          var score = Math.min(140, (rect.width * rect.height / viewportArea) * 140);
-          score += Math.min(45, scrollRange(node) / 180);
-          if (node.tagName === 'MAIN' || role === 'main') score += 70;
-          if (role === 'dialog') score += 35;
-          if (rect.width > window.innerWidth * 0.55) score += 25;
-          if (score > bestScore) {
-            best = node;
-            bestScore = score;
-          }
-        }
-
-        var root = document.scrollingElement || document.documentElement;
-        if (!best && isScroller(root)) best = root;
-        return best;
-      }
-
-      function ensureScrollbar() {
-        if (scrollbar && scrollbar.isConnected) return true;
-        if (!document.body) return false;
-
-        scrollbar = document.createElement('div');
-        scrollbar.id = 'gptweb-scrollbar';
-        scrollbar.setAttribute('aria-hidden', 'true');
-        thumb = document.createElement('div');
-        thumb.id = 'gptweb-scrollbar-thumb';
-        scrollbar.appendChild(thumb);
-        document.body.appendChild(scrollbar);
-
-        scrollbar.addEventListener('touchstart', beginBarGesture, {
-          passive: false
-        });
-        scrollbar.addEventListener('touchmove', continueBarGesture, {
-          passive: false
-        });
-        scrollbar.addEventListener('touchend', endBarGesture, {
-          passive: false
-        });
-        scrollbar.addEventListener('touchcancel', cancelBarGesture, {
-          passive: false
-        });
-        return true;
-      }
-
-      function setActiveScroller(element, shouldReveal) {
-        if (!isScroller(element)) return false;
-        activeScroller = element;
-        scheduleUpdate();
-        if (shouldReveal) revealScrollbar();
-        return true;
-      }
-
-      function ensureActiveScroller() {
-        if (isScroller(activeScroller)) return activeScroller;
-        activeScroller = defaultScroller();
-        return activeScroller;
-      }
-
-      function barHeight() {
-        if (!scrollbar) return 0;
-        return scrollbar.clientHeight || scrollbar.getBoundingClientRect().height || 0;
-      }
-
-      function thumbMetrics(scroller) {
-        var height = barHeight();
-        var maximum = scrollRange(scroller);
-        if (height <= 0 || maximum <= 0) return null;
-        var thumbHeight = Math.max(
-          42,
-          Math.min(height, height * scroller.clientHeight / scroller.scrollHeight)
-        );
-        var travel = Math.max(1, height - thumbHeight);
-        var top = Math.max(0, Math.min(
-          travel,
-          scroller.scrollTop / maximum * travel
-        ));
-        return {
-          height: height,
-          maximum: maximum,
-          thumbHeight: thumbHeight,
-          travel: travel,
-          top: top
-        };
-      }
-
-      function updateScrollbar() {
-        updateScheduled = false;
-        if (!ensureScrollbar()) return;
-        var scroller = ensureActiveScroller();
-        var metrics = scroller ? thumbMetrics(scroller) : null;
-        if (!metrics) {
-          scrollbar.classList.remove('gptweb-visible');
-          scrollbar.classList.remove('gptweb-interactive');
-          return;
-        }
-        thumb.style.height = metrics.thumbHeight + 'px';
-        thumb.style.transform = 'translate3d(0,' + metrics.top + 'px,0)';
-      }
-
-      function scheduleUpdate() {
-        if (updateScheduled) return;
-        updateScheduled = true;
-        window.requestAnimationFrame(updateScrollbar);
-      }
-
-      function hideScrollbarSoon() {
-        if (!scrollbar) return;
-        if (hideTimer) window.clearTimeout(hideTimer);
-        hideTimer = window.setTimeout(function () {
-          hideTimer = 0;
-          if (barGesture) return;
-          scrollbar.classList.remove('gptweb-visible');
-          scrollbar.classList.remove('gptweb-interactive');
-          scrollbar.classList.remove('gptweb-fast');
-        }, 1400);
-      }
-
-      function revealScrollbar() {
-        if (!ensureScrollbar()) return;
-        scrollbar.classList.add('gptweb-visible');
-        scrollbar.classList.add('gptweb-interactive');
-        scheduleUpdate();
-        hideScrollbarSoon();
-      }
-
-      function cancelInertia() {
-        if (!inertiaFrame) return;
-        window.cancelAnimationFrame(inertiaFrame);
-        inertiaFrame = 0;
-      }
-
-      function prepareScrollTarget(scroller) {
-        if (!scroller || !scroller.style || !scroller.style.setProperty) {
-          return {
-            scroller: scroller,
-            persistent: true,
-            saved: []
-          };
-        }
-        var overflow = overflowKind(scroller);
-        var properties = [
-          'overflow-y',
-          '-webkit-overflow-scrolling',
-          'overscroll-behavior-y',
-          'touch-action',
-          'min-height'
-        ];
-        var saved = properties.map(function (name) {
-          return {
-            name: name,
-            value: scroller.style.getPropertyValue ?
-              scroller.style.getPropertyValue(name) :
-              String(scroller.style[name] || ''),
-            priority: scroller.style.getPropertyPriority ?
-              scroller.style.getPropertyPriority(name) :
-              ''
-          };
-        });
-        scroller.style.setProperty('overflow-y', 'auto', 'important');
-        scroller.style.setProperty(
-          '-webkit-overflow-scrolling',
-          'auto',
-          'important'
-        );
-        scroller.style.setProperty(
-          'overscroll-behavior-y',
-          'contain',
-          'important'
-        );
-        scroller.style.setProperty('touch-action', 'pan-y', 'important');
-        scroller.style.setProperty('min-height', '0', 'important');
-        void scroller.offsetHeight;
-        return {
-          scroller: scroller,
-          persistent: overflow === 'hidden' || overflow === 'clip',
-          saved: saved
-        };
-      }
-
-      function restoreScrollTarget(prepared) {
-        if (!prepared || prepared.persistent || !prepared.scroller) return;
-        if (barGesture && barGesture.scroller === prepared.scroller) {
-          window.setTimeout(function () {
-            restoreScrollTarget(prepared);
-          }, 500);
-          return;
-        }
-        var style = prepared.scroller.style;
-        prepared.saved.forEach(function (entry) {
-          if (entry.value) {
-            style.setProperty(entry.name, entry.value, entry.priority);
-          } else if (style.removeProperty) {
-            style.removeProperty(entry.name);
-          } else {
-            style[entry.name] = '';
-          }
-        });
-        void prepared.scroller.offsetHeight;
-      }
-
-      function beginBarGesture(event) {
-        if (event.touches.length !== 1) return;
-        var prepared = prepareScrollTarget(ensureActiveScroller());
-        var scroller = prepared.scroller;
-        var metrics = scroller ? thumbMetrics(scroller) : null;
-        if (!metrics) {
-          restoreScrollTarget(prepared);
-          return;
-        }
-
-        var touch = event.touches[0];
-        cancelInertia();
-        if (hideTimer) {
-          window.clearTimeout(hideTimer);
-          hideTimer = 0;
-        }
-        barGesture = {
-          startY: touch.clientY,
-          lastY: touch.clientY,
-          lastTime: Date.now(),
-          startTop: scroller.scrollTop,
-          maximum: metrics.maximum,
-          travel: metrics.travel,
-          scroller: scroller,
-          fast: false,
-          moved: false,
-          velocity: 0,
-          longPressTimer: 0,
-          prepared: prepared
-        };
-        barGesture.longPressTimer = window.setTimeout(function () {
-          if (!barGesture || barGesture.moved) return;
-          barGesture.fast = true;
-          scrollbar.classList.add('gptweb-fast');
-          revealScrollbar();
-        }, 360);
-        event.preventDefault();
-        event.stopPropagation();
-        revealScrollbar();
-      }
-
-      function continueBarGesture(event) {
-        if (!barGesture || event.touches.length !== 1) return;
-        var touch = event.touches[0];
-        var now = Date.now();
-        var totalDelta = touch.clientY - barGesture.startY;
-        var stepDelta = barGesture.lastY - touch.clientY;
-        var elapsed = Math.max(1, now - barGesture.lastTime);
-
-        if (!barGesture.fast && Math.abs(totalDelta) > 7) {
-          barGesture.moved = true;
-          if (barGesture.longPressTimer) {
-            window.clearTimeout(barGesture.longPressTimer);
-            barGesture.longPressTimer = 0;
-          }
-        }
-
-        var next;
-        if (barGesture.fast) {
-          next = barGesture.startTop +
-            totalDelta / barGesture.travel * barGesture.maximum;
-        } else {
-          next = barGesture.scroller.scrollTop + stepDelta;
-          var instantaneousVelocity = stepDelta / elapsed;
-          barGesture.velocity =
-            barGesture.velocity * 0.72 + instantaneousVelocity * 0.28;
-        }
-        barGesture.scroller.scrollTop = Math.max(
-          0,
-          Math.min(barGesture.maximum, next)
-        );
-        barGesture.lastY = touch.clientY;
-        barGesture.lastTime = now;
-        event.preventDefault();
-        event.stopPropagation();
-        scheduleUpdate();
-      }
-
-      function startInertia(scroller, velocity) {
-        if (!scroller || Math.abs(velocity) < 0.08) return;
-        var previous = Date.now();
-        function step() {
-          var now = Date.now();
-          var elapsed = Math.min(32, Math.max(1, now - previous));
-          previous = now;
-          var maximum = scrollRange(scroller);
-          var current = scroller.scrollTop;
-          var next = Math.max(0, Math.min(maximum, current + velocity * elapsed));
-          scroller.scrollTop = next;
-          velocity *= Math.pow(0.94, elapsed / 16);
-          scheduleUpdate();
-          revealScrollbar();
-          if (Math.abs(velocity) >= 0.025 &&
-              next > 0 && next < maximum) {
-            inertiaFrame = window.requestAnimationFrame(step);
-          } else {
-            inertiaFrame = 0;
-            hideScrollbarSoon();
-          }
-        }
-        inertiaFrame = window.requestAnimationFrame(step);
-      }
-
-      function finishBarGesture(event, cancelled) {
-        if (!barGesture) return;
-        var finished = barGesture;
-        if (finished.longPressTimer) {
-          window.clearTimeout(finished.longPressTimer);
-        }
-        barGesture = null;
-        scrollbar.classList.remove('gptweb-fast');
-        if (!cancelled && !finished.fast) {
-          startInertia(finished.scroller, finished.velocity);
-        }
-        window.setTimeout(function () {
-          restoreScrollTarget(finished.prepared);
-        }, 1600);
-        if (event.cancelable) event.preventDefault();
-        event.stopPropagation();
-        scheduleUpdate();
-        hideScrollbarSoon();
-      }
-
-      function endBarGesture(event) {
-        finishBarGesture(event, false);
-      }
-
-      function cancelBarGesture(event) {
-        finishBarGesture(event, true);
-      }
-
-      document.addEventListener('touchstart', function (event) {
-        if (scrollbar && scrollbar.contains(event.target)) return;
-        if (event.touches.length !== 1) return;
-        var touch = event.touches[0];
-        var scroller = findScroller(
-          event.target,
-          touch.clientX,
-          touch.clientY
-        );
-        if (!scroller) {
-          pendingContentTouch = null;
-          return;
-        }
-        setActiveScroller(scroller, false);
-        lastContentSelectionAt = Date.now();
-        pendingContentTouch = {
-          startX: touch.clientX,
-          startY: touch.clientY
-        };
-      }, {
-        capture: true,
-        passive: true
-      });
-
-      document.addEventListener('touchmove', function (event) {
-        if (!pendingContentTouch || event.touches.length !== 1) return;
-        var touch = event.touches[0];
-        var deltaX = touch.clientX - pendingContentTouch.startX;
-        var deltaY = touch.clientY - pendingContentTouch.startY;
-        if (Math.abs(deltaY) < 5 ||
-            Math.abs(deltaY) <= Math.abs(deltaX)) return;
-        pendingContentTouch = null;
-        revealScrollbar();
-      }, {
-        capture: true,
-        passive: true
-      });
-
-      function clearPendingContentTouch() {
-        pendingContentTouch = null;
-      }
-
-      document.addEventListener('touchend', clearPendingContentTouch, {
-        capture: true,
-        passive: true
-      });
-      document.addEventListener('touchcancel', clearPendingContentTouch, {
-        capture: true,
-        passive: true
-      });
-
-      document.addEventListener('scroll', function (event) {
-        var target = event.target;
-        var root = document.scrollingElement || document.documentElement;
-        if (target === document || target === document.documentElement) {
-          target = root;
-        }
-        var preserveNestedTarget = activeScroller &&
-          activeScroller !== root &&
-          target === root &&
-          (barGesture || Date.now() - lastContentSelectionAt < 2400);
-        if (!preserveNestedTarget && isScroller(target)) {
-          activeScroller = target;
-        }
-        revealScrollbar();
-      }, {
-        capture: true,
-        passive: true
-      });
-
-      var observer = new MutationObserver(function () {
-        if (!activeScroller || !activeScroller.isConnected || scrollRange(activeScroller) < 12) {
-          activeScroller = null;
-        }
-        scheduleUpdate();
-      });
-      observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true
-      });
-
-      window.addEventListener('resize', scheduleUpdate, {
-        passive: true
-      });
-      window.setInterval(scheduleUpdate, 1200);
-      ensureScrollbar();
-      scheduleUpdate();
-    })();
-    """
-
-    private static let sidebarGestureScript = """
-    (function () {
-      var hostname = String(window.location.hostname || '').toLowerCase();
-      var isChatGPTDocument = hostname === 'chatgpt.com' ||
-        hostname.slice(-12) === '.chatgpt.com' ||
-        hostname === 'chat.openai.com';
-      if (!isChatGPTDocument) return;
-      if (window.__gptwebSidebarGestureInstalled) return;
-      window.__gptwebSidebarGestureInstalled = true;
-
-      var style = document.createElement('style');
-      style.id = 'gptweb-sidebar-gesture-style';
-      style.textContent = [
-        '#stage-popover-sidebar {',
-        '  will-change: transform, opacity;',
-        '  -webkit-backface-visibility: hidden;',
-        '  backface-visibility: hidden;',
-        '}'
-      ].join('\\n');
-      (document.head || document.documentElement).appendChild(style);
-
-      var gesture = null;
-      var openSelector =
-        'button[data-testid="open-sidebar-button"]';
-      var closeSelector =
-        'button[data-testid="close-sidebar-button"]';
-      var cachedOpenControl = null;
-      var cachedCloseControl = null;
-      var didPrimeSidebar = false;
-
-      function isVisible(element) {
-        if (!element || element.isConnected === false) return false;
-        var computed = window.getComputedStyle(element);
-        if (computed.display === 'none' ||
-            computed.visibility === 'hidden') {
-          return false;
-        }
-        var rect = element.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      }
-
-      function controlText(element) {
-        return [
-          element.getAttribute('data-testid') || '',
-          element.getAttribute('aria-label') || '',
-          element.getAttribute('title') || '',
-          element.textContent || ''
-        ].join(' ').toLowerCase();
-      }
-
-      function fallbackControl(action) {
-        var candidates = Array.prototype.slice.call(
-          document.querySelectorAll('button,[role="button"]')
-        );
-        var best = null;
-        var bestScore = 0;
-        candidates.forEach(function (candidate) {
-          if (!isVisible(candidate)) return;
-          var text = controlText(candidate);
-          var rect = candidate.getBoundingClientRect();
-          var score = 0;
-          if (action === 'open') {
-            if (/open[- _]?sidebar/.test(text)) score += 240;
-            if (/open.*sidebar|sidebar.*open/.test(text)) score += 180;
-            if (/打开.*(侧边栏|边栏|菜单)/.test(text)) score += 180;
-            if (/菜单|menu/.test(text)) score += 35;
-            if (candidate.getAttribute('aria-expanded') === 'false') {
-              score += 65;
-            }
-            if (rect.top < 130 && rect.left < 110) score += 45;
-          } else {
-            if (/close[- _]?sidebar/.test(text)) score += 240;
-            if (/close.*sidebar|sidebar.*close/.test(text)) score += 180;
-            if (/关闭.*(侧边栏|边栏|菜单)/.test(text)) score += 180;
-            if (candidate.getAttribute('aria-expanded') === 'true') {
-              score += 80;
-            }
-          }
-          if (score > bestScore) {
-            best = candidate;
-            bestScore = score;
-          }
-        });
-        return bestScore >= 120 ? best : null;
-      }
-
-      function connectedControl(control) {
-        return control && control.isConnected !== false ? control : null;
-      }
-
-      function openControl(allowFallback) {
-        var cached = connectedControl(cachedOpenControl);
-        if (cached) return cached;
-        var direct = connectedControl(document.querySelector(openSelector));
-        if (direct) {
-          cachedOpenControl = direct;
-          return direct;
-        }
-        if (allowFallback === false) return null;
-        cachedOpenControl = fallbackControl('open');
-        return cachedOpenControl;
-      }
-
-      function closeControl(allowFallback) {
-        var cached = connectedControl(cachedCloseControl);
-        if (cached) return cached;
-        var direct = connectedControl(document.querySelector(closeSelector));
-        if (direct) {
-          cachedCloseControl = direct;
-          return direct;
-        }
-        if (allowFallback === false) return null;
-        cachedCloseControl = fallbackControl('close');
-        return cachedCloseControl;
-      }
-
-      function sidebarIsOpen() {
-        var directClose = connectedControl(
-          document.querySelector(closeSelector)
-        );
-        if (directClose) {
-          cachedCloseControl = directClose;
-          return true;
-        }
-        cachedCloseControl = null;
-
-        var sidebar = document.getElementById('stage-popover-sidebar');
-        if (connectedControl(sidebar) &&
-            sidebar.hidden !== true &&
-            (!sidebar.getAttribute ||
-             sidebar.getAttribute('aria-hidden') !== 'true')) {
-          return true;
-        }
-
-        var directOpen = connectedControl(cachedOpenControl);
-        return Boolean(
-          directOpen &&
-          directOpen.getAttribute('aria-expanded') === 'true'
-        );
-      }
-
-      function activate(element) {
-        if (!element) return false;
-        element.click();
-        return true;
-      }
-
-      function openSidebar() {
-        if (sidebarIsOpen()) return true;
-        return activate(openControl());
-      }
-
-      function closeSidebar() {
-        if (!sidebarIsOpen()) return true;
-        if (activate(closeControl())) {
-          cachedCloseControl = null;
-          return true;
-        }
-
-        var toggle = openControl(false);
-        if (toggle &&
-            toggle.getAttribute('aria-expanded') === 'true' &&
-            activate(toggle)) {
-          cachedCloseControl = null;
-          return true;
-        }
-
-        try {
-          document.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Escape',
-            code: 'Escape',
-            keyCode: 27,
-            which: 27,
-            bubbles: true
-          }));
-          return true;
-        } catch (_) {
-          return false;
-        }
-      }
-
-      function primeSidebarButton() {
-        if (didPrimeSidebar) return;
-        var button = openControl();
-        if (!button || sidebarIsOpen()) return;
-        didPrimeSidebar = true;
-        ['pointerover', 'mouseover'].forEach(function (eventName) {
-          try {
-            button.dispatchEvent(new MouseEvent(eventName, {
-              bubbles: true,
-              cancelable: false
-            }));
-          } catch (_) {}
-        });
-      }
-
-      function schedulePrime() {
-        if (typeof window.requestIdleCallback === 'function') {
-          window.requestIdleCallback(primeSidebarButton, {
-            timeout: 1800
-          });
-        } else {
-          window.setTimeout(primeSidebarButton, 900);
-        }
-      }
-
-      function isEditableTarget(target) {
-        if (!target || !target.closest) return false;
-        return Boolean(target.closest(
-          'textarea,input,select,[contenteditable="true"],' +
-          '[role="textbox"],canvas'
-        ));
-      }
-
-      function beginGesture(event) {
-        gesture = null;
-        if (event.touches.length !== 1 ||
-            isEditableTarget(event.target)) {
-          return;
-        }
-
-        var touch = event.touches[0];
-        if (touch.clientX <= 36 && !sidebarIsOpen()) {
-          gesture = {
-            action: 'open',
-            startX: touch.clientX,
-            startY: touch.clientY
-          };
-        } else if (sidebarIsOpen()) {
-          gesture = {
-            action: 'close',
-            startX: touch.clientX,
-            startY: touch.clientY
-          };
-        }
-      }
-
-      function continueGesture(event) {
-        if (!gesture || event.touches.length !== 1) return;
-        var touch = event.touches[0];
-        var deltaX = touch.clientX - gesture.startX;
-        var deltaY = touch.clientY - gesture.startY;
-        var horizontal = Math.abs(deltaX);
-        var vertical = Math.abs(deltaY);
-
-        if (horizontal < 10 && vertical < 10) return;
-        if (vertical > horizontal * 0.82) {
-          gesture = null;
-          return;
-        }
-
-        if (gesture.action === 'open' && deltaX >= 18) {
-          gesture = null;
-          openSidebar();
-        } else if (gesture.action === 'close' && deltaX <= -18) {
-          gesture = null;
-          closeSidebar();
-        }
-      }
-
-      function endGesture() {
-        gesture = null;
-      }
-
-      document.addEventListener('touchstart', beginGesture, {
-        capture: true,
-        passive: true
-      });
-      document.addEventListener('touchmove', continueGesture, {
-        capture: true,
-        passive: true
-      });
-      document.addEventListener('touchend', endGesture, {
-        capture: true,
-        passive: true
-      });
-      document.addEventListener('touchcancel', endGesture, {
-        capture: true,
-        passive: true
-      });
-
-      schedulePrime();
-    })();
-    """
-
-    private static let workRepairDotScript = """
-    (function () {
-      var hostname = String(window.location.hostname || '').toLowerCase();
-      var isChatGPTDocument = hostname === 'chatgpt.com' ||
-        hostname.slice(-12) === '.chatgpt.com' ||
-        hostname === 'chat.openai.com';
-      if (!isChatGPTDocument) return;
-      if (window.__gptwebWorkRepairDotInstalled) return;
-      window.__gptwebWorkRepairDotInstalled = true;
-
-      var compatibilityStyle = document.createElement('style');
-      compatibilityStyle.id = 'gptweb-ios16-base-style';
-      compatibilityStyle.textContent = [
-        'html { -webkit-text-size-adjust: 100%; }',
-        '@supports (-webkit-touch-callout: none) {',
-        '  textarea, input:not([type="checkbox"]):not([type="radio"]), [contenteditable="true"] {',
-        '    font-size: 16px !important;',
-        '  }',
-        '  button, a, [role="button"] { touch-action: manipulation; }',
-        '}'
-      ].join('\\n');
-      (document.head || document.documentElement).appendChild(
-        compatibilityStyle
+      var control = document.querySelector(
+        'button[data-testid="open-sidebar-button"]'
+      ) || document.querySelector(
+        '[aria-label="Open sidebar"], [aria-label="打开边栏"], ' +
+        '[aria-label="打开侧边栏"], [aria-label="打开聊天列表"]'
       );
+      if (!control || control.disabled) return false;
+      control.click();
+      return true;
+    })();
+    """
 
-      var dotStyleRules = [
-        '#gptweb-work-repair-dot {',
-        '  position: fixed;',
-        '  z-index: 2147483646;',
-        '  top: calc(env(safe-area-inset-top, 0px) + 56px);',
-        '  right: 7px;',
-        '  width: 30px;',
-        '  height: 30px;',
-        '  border: 0;',
-        '  background: transparent;',
-        '  box-shadow: none;',
-        '  opacity: 0;',
-        '  pointer-events: none;',
-        '  touch-action: none !important;',
-        '  -webkit-touch-callout: none !important;',
-        '  -webkit-user-select: none;',
-        '  user-select: none;',
-        '  transition: opacity 140ms ease;',
+    private static let closeSidebarScript = """
+    (function () {
+      var control = document.querySelector(
+        'button[data-testid="close-sidebar-button"]'
+      ) || document.querySelector(
+        '[aria-label="Close sidebar"], [aria-label="关闭边栏"], ' +
+        '[aria-label="关闭侧边栏"], [aria-label="收起聊天列表"]'
+      );
+      var sidebar = document.getElementById('stage-popover-sidebar');
+      if (!control && sidebar) {
+        control = sidebar.querySelector('button, [role="button"]');
+      }
+      if (!control || control.disabled) return false;
+      control.click();
+      return true;
+    })();
+    """
+
+    private static let automaticScrollRepairScript = """
+    (function () {
+      var hostname = String(window.location.hostname || '').toLowerCase();
+      var supportedHost = hostname === 'chatgpt.com' ||
+        hostname.slice(-12) === '.chatgpt.com' ||
+        hostname === 'chat.openai.com';
+      if (!supportedHost || window.__gptwebAutomaticScrollRepairInstalled) return;
+      window.__gptwebAutomaticScrollRepairInstalled = true;
+
+      var style = document.createElement('style');
+      style.id = 'gptweb-ios16-automatic-scroll-style';
+      style.textContent = [
+        'html { -webkit-text-size-adjust: 100%; }',
+        '@supports (-webkit-touch-callout: none) {',
+        '  textarea, input:not([type="checkbox"]):not([type="radio"]), [contenteditable="true"] {',
+        '    font-size: 16px !important;',
+        '  }',
+        '  button, a, [role="button"] { touch-action: manipulation; }',
         '}',
-        '#gptweb-work-repair-dot::before {',
-        '  content: "";',
-        '  position: absolute;',
-        '  top: 50%;',
-        '  left: 50%;',
-        '  width: 9px;',
-        '  height: 9px;',
-        '  margin: -4.5px 0 0 -4.5px;',
-        '  border-radius: 50%;',
-        '  background: #0a84ff;',
-        '  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);',
-        '  transform: scale(1);',
-        '  transition: transform 140ms ease, box-shadow 140ms ease;',
-        '}',
-        '#gptweb-work-repair-dot.gptweb-visible {',
-        '  opacity: 0.96;',
-        '  pointer-events: auto;',
-        '}',
-        '#gptweb-work-repair-dot.gptweb-pressing::before {',
-        '  transform: scale(1.45);',
-        '}',
-        '#gptweb-work-repair-dot.gptweb-repaired::before {',
-        '  transform: scale(1.7);',
-        '  box-shadow: 0 0 0 5px rgba(10, 132, 255, 0.18);',
+        '[data-gptweb-scroll-repaired="true"] {',
+        '  overflow-y: auto !important;',
+        '  -webkit-overflow-scrolling: auto !important;',
+        '  overscroll-behavior-y: contain !important;',
+        '  touch-action: pan-y !important;',
+        '  min-height: 0 !important;',
         '}'
-      ].join('\\n');
+      ].join(String.fromCharCode(10));
+      (document.head || document.documentElement).appendChild(style);
 
-      var dot = null;
-      var dotStyle = null;
-      var activeScroller = null;
-      var pendingContentTouch = null;
-      var lastContentTouch = null;
-      var press = null;
-      var hideTimer = 0;
-      var lastContentSelectionAt = 0;
+      var observer = null;
+      var retryTimer = 0;
+      var mutationTimer = 0;
+      var attempts = 0;
+      var deadline = 0;
+      var maxAttempts = 12;
 
-      function parentElementAcrossShadowDOM(element) {
+      function stopWatching() {
+        if (observer) {
+          observer.disconnect();
+          observer = null;
+        }
+        if (retryTimer) {
+          window.clearTimeout(retryTimer);
+          retryTimer = 0;
+        }
+        if (mutationTimer) {
+          window.clearTimeout(mutationTimer);
+          mutationTimer = 0;
+        }
+      }
+
+      function parentAcrossShadowDOM(element) {
         if (!element) return null;
         if (element.parentElement) return element.parentElement;
         var root = element.getRootNode ? element.getRootNode() : null;
         return root && root.host ? root.host : null;
-      }
-
-      function scrollRange(element) {
-        return element ?
-          Math.max(0, element.scrollHeight - element.clientHeight) :
-          0;
-      }
-
-      function overflowKind(element) {
-        var value = window.getComputedStyle(element).overflowY;
-        return value || 'visible';
       }
 
       function inspectScroller(element) {
         if (!element || element.nodeType !== 1 || !element.isConnected) {
           return null;
         }
-        var range = scrollRange(element);
-        if (range < 12) return null;
         var root = document.scrollingElement || document.documentElement;
-        if (element === root) {
-          return {
-            element: element,
-            range: range,
-            rect: null,
-            role: '',
-            name: '',
-            native: true
-          };
-        }
+        if (element === root || element === document.body) return null;
+
+        var range = Math.max(0, element.scrollHeight - element.clientHeight);
+        if (range < 12) return null;
+
         var rect = element.getBoundingClientRect();
-        var viewportHeight =
-          window.innerHeight || document.documentElement.clientHeight;
-        var viewportWidth =
-          window.innerWidth || document.documentElement.clientWidth;
-        if (rect.height < 96 || rect.width < 120 ||
-            rect.bottom <= 0 || rect.right <= 0 ||
-            rect.top >= viewportHeight || rect.left >= viewportWidth) {
+        var viewportWidth = window.innerWidth || root.clientWidth;
+        var viewportHeight = window.innerHeight || root.clientHeight;
+        if (rect.width < 120 || rect.height < 96 ||
+            rect.right <= 0 || rect.bottom <= 0 ||
+            rect.left >= viewportWidth || rect.top >= viewportHeight) {
           return null;
         }
-        var overflow = overflowKind(element);
+
+        if (element.closest && element.closest(
+          '#stage-popover-sidebar, [role="menu"], pre, code'
+        )) {
+          return null;
+        }
+
+        var overflow = window.getComputedStyle(element).overflowY || 'visible';
         var role = element.getAttribute('role') || '';
         var name = String(element.className || '');
         var native = overflow === 'auto' ||
           overflow === 'scroll' ||
           overflow === 'overlay';
-        var scrollable = native ||
+        var relevant = native ||
           overflow === 'hidden' ||
           overflow === 'clip' ||
           element.tagName === 'MAIN' ||
@@ -2309,7 +1159,8 @@ final class WebViewController: UIViewController {
           role === 'dialog' ||
           name.indexOf('overflow') !== -1 ||
           element.hasAttribute('data-scroll-root');
-        if (!scrollable) return null;
+        if (!relevant) return null;
+
         return {
           element: element,
           range: range,
@@ -2320,180 +1171,98 @@ final class WebViewController: UIViewController {
         };
       }
 
-      function brokenScrollerScore(element, inspection) {
-        var inspected = inspection || inspectScroller(element);
-        if (!inspected || inspected.native || !inspected.rect) return -1;
-        var rect = inspected.rect;
-        var viewportArea = Math.max(
-          1,
-          window.innerWidth * window.innerHeight
-        );
+      function scrollerScore(inspection, focused) {
+        var viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
         var score = Math.min(
           100,
-          rect.width * rect.height / viewportArea * 100
+          inspection.rect.width * inspection.rect.height / viewportArea * 100
         );
-        score += Math.min(45, inspected.range / 160);
-        if (element.tagName === 'MAIN' || inspected.role === 'main') {
-          score += 80;
-        }
-        if (inspected.role === 'dialog') score += 45;
-        if (element.hasAttribute('data-scroll-root')) score += 70;
-        if (inspected.name.indexOf('overflow') !== -1) score += 35;
+        score += Math.min(55, inspection.range / 120);
+        if (focused) score += 140;
+        if (inspection.native) score += 65;
+        if (inspection.element.tagName === 'MAIN' ||
+            inspection.role === 'main') score += 70;
+        if (inspection.role === 'dialog') score += 35;
+        if (inspection.name.indexOf('overflow') !== -1) score += 40;
+        if (inspection.element.hasAttribute('data-scroll-root')) score += 85;
         return score;
       }
 
-      function nearestScroller(start, path) {
-        var element = start && start.nodeType === 1 ?
-          start :
-          start && start.parentElement;
-        var brokenCandidate = null;
-        var brokenScore = -1;
-        var depth = 0;
-        var pathLength = path ? Math.min(path.length, 40) : 0;
-        while (element && depth < 40) {
-          var inspected = inspectScroller(element);
-          if (inspected) {
-            if (inspected.native) return element;
-            var score = brokenScrollerScore(element, inspected);
-            if (score > brokenScore) {
-              brokenCandidate = element;
-              brokenScore = score;
+      function findScroller() {
+        var candidates = [];
+        var focusedCandidates = [];
+
+        function collect(element, focused) {
+          var current = element && element.nodeType === 1 ? element : null;
+          var depth = 0;
+          while (current && depth < 18 && candidates.length < 48) {
+            if (candidates.indexOf(current) === -1) candidates.push(current);
+            if (focused && focusedCandidates.indexOf(current) === -1) {
+              focusedCandidates.push(current);
             }
+            current = parentAcrossShadowDOM(current);
+            depth += 1;
           }
-          depth += 1;
-          element = depth < pathLength && path[depth] &&
-            path[depth].nodeType === 1 ?
-              path[depth] :
-              parentElementAcrossShadowDOM(element);
         }
-        return brokenCandidate;
-      }
 
-      function pointInside(rect, x, y) {
-        return x >= rect.left && x <= rect.right &&
-          y >= rect.top && y <= rect.bottom;
-      }
+        if (typeof document.elementFromPoint === 'function') {
+          var viewportWidth = window.innerWidth ||
+            document.documentElement.clientWidth;
+          var viewportHeight = window.innerHeight ||
+            document.documentElement.clientHeight;
+          [0.36, 0.55, 0.72].forEach(function (verticalRatio) {
+            collect(document.elementFromPoint(
+              viewportWidth * 0.52,
+              viewportHeight * verticalRatio
+            ), true);
+          });
+        }
 
-      function fallbackScroller(start, x, y) {
         var selector = [
           '[data-scroll-root]',
-          '[data-testid*="conversation"]',
-          '[data-testid*="thread"]',
-          '[data-testid*="message"]',
-          '[class*="overflow-y-auto"]',
-          '[class*="overflow-auto"]',
+          'main [role="log"]',
+          'main [role="feed"]',
+          'main [class*="overflow-y-auto"]',
+          'main [class*="overflow-auto"]',
+          '[role="main"] [class*="overflow-y-auto"]',
+          '[role="main"] [class*="overflow-auto"]',
+          '[role="dialog"] [class*="overflow-y-auto"]',
           '[role="main"]',
           '[role="dialog"]',
           'main'
         ].join(',');
         var nodes = document.querySelectorAll(selector);
+        var limit = Math.min(nodes.length, 40);
+        for (var index = 0; index < limit && candidates.length < 48; index += 1) {
+          if (candidates.indexOf(nodes[index]) === -1) {
+            candidates.push(nodes[index]);
+          }
+        }
+
         var best = null;
         var bestScore = -1;
-        var count = Math.min(nodes.length, 400);
-        for (var index = 0; index < count; index += 1) {
-          var node = nodes[index];
-          var inspected = inspectScroller(node);
-          if (!inspected || !inspected.rect) continue;
-          var rect = inspected.rect;
-          var containsStart = start && node.contains(start);
-          var containsPoint = pointInside(rect, x, y);
-          if (!containsStart && !containsPoint) continue;
-          var score = 0;
-          if (containsStart) score += 140;
-          if (containsPoint) score += 80;
-          if (inspected.native) score += 90;
-          score += Math.max(0, brokenScrollerScore(node, inspected));
+        for (var candidateIndex = 0;
+             candidateIndex < candidates.length;
+             candidateIndex += 1) {
+          var candidate = candidates[candidateIndex];
+          var inspection = inspectScroller(candidate);
+          if (!inspection) continue;
+          var score = scrollerScore(
+            inspection,
+            focusedCandidates.indexOf(candidate) !== -1
+          );
           if (score > bestScore) {
-            best = node;
+            best = candidate;
             bestScore = score;
           }
         }
         return best;
       }
 
-      function cachedScroller(start, path) {
-        if (!activeScroller || !activeScroller.isConnected) return null;
-        var root = document.scrollingElement || document.documentElement;
-        if (activeScroller === root) return null;
-        if (activeScroller.contains && activeScroller.contains(start)) {
-          return activeScroller;
-        }
-        if (path && path.indexOf(activeScroller) !== -1) {
-          return activeScroller;
-        }
-        return null;
-      }
-
-      function findScroller(start, path) {
-        var nested = cachedScroller(start, path) ||
-          nearestScroller(start, path);
-        if (nested) return nested;
-        var root = document.scrollingElement || document.documentElement;
-        return root && scrollRange(root) >= 12 ? root : null;
-      }
-
-      function ensureDot() {
-        if (dot && dot.isConnected) return true;
-        if (!document.body) return false;
-        if (!dotStyle || !dotStyle.isConnected) {
-          dotStyle = document.createElement('style');
-          dotStyle.id = 'gptweb-work-repair-dot-style';
-          dotStyle.textContent = dotStyleRules;
-          (document.head || document.documentElement).appendChild(dotStyle);
-        }
-        dot = document.createElement('div');
-        dot.id = 'gptweb-work-repair-dot';
-        dot.setAttribute('role', 'button');
-        dot.setAttribute('aria-label', '修复 Work 滚动');
-        document.body.appendChild(dot);
-        dot.addEventListener('touchstart', beginPress, {
-          passive: false
-        });
-        dot.addEventListener('touchmove', movePress, {
-          passive: false
-        });
-        dot.addEventListener('touchend', endPress, {
-          passive: false
-        });
-        dot.addEventListener('touchcancel', cancelPress, {
-          passive: false
-        });
-        return true;
-      }
-
-      function isRepaired(element) {
-        return element &&
-          element.getAttribute('data-gptweb-scroll-repaired') === 'true';
-      }
-
-      function hideDot() {
-        if (!dot || press) return;
-        dot.classList.remove('gptweb-visible');
-        dot.classList.remove('gptweb-pressing');
-        dot.classList.remove('gptweb-repaired');
-      }
-
-      function hideDotSoon(delay) {
-        if (hideTimer) window.clearTimeout(hideTimer);
-        hideTimer = window.setTimeout(function () {
-          hideTimer = 0;
-          hideDot();
-        }, delay);
-      }
-
-      function revealDot() {
-        if (!activeScroller || isRepaired(activeScroller)) {
-          hideDot();
-          return;
-        }
-        if (!ensureDot()) return;
-        dot.classList.add('gptweb-visible');
-        hideDotSoon(1800);
-      }
-
       function repairScroller(element) {
-        if (!element || !element.style || !element.style.setProperty) {
-          return false;
+        if (!element || !element.style) return false;
+        if (element.getAttribute('data-gptweb-scroll-repaired') === 'true') {
+          return true;
         }
         element.style.setProperty('overflow-y', 'auto', 'important');
         element.style.setProperty(
@@ -2510,163 +1279,65 @@ final class WebViewController: UIViewController {
         element.style.setProperty('min-height', '0', 'important');
         element.setAttribute('data-gptweb-scroll-repaired', 'true');
         void element.offsetHeight;
-        activeScroller = element;
         return true;
       }
 
-      function clearPressTimer() {
-        if (!press || !press.timer) return;
-        window.clearTimeout(press.timer);
-        press.timer = 0;
-      }
+      function attemptRepair() {
+        if (retryTimer) {
+          window.clearTimeout(retryTimer);
+          retryTimer = 0;
+        }
+        if (mutationTimer) {
+          window.clearTimeout(mutationTimer);
+          mutationTimer = 0;
+        }
+        if (attempts >= maxAttempts || Date.now() > deadline) {
+          stopWatching();
+          return false;
+        }
+        attempts += 1;
 
-      function beginPress(event) {
-        if (event.touches.length !== 1 ||
-            !activeScroller ||
-            isRepaired(activeScroller)) {
-          return;
+        var scroller = findScroller();
+        if (scroller && repairScroller(scroller)) {
+          stopWatching();
+          return true;
         }
-        if (hideTimer) {
-          window.clearTimeout(hideTimer);
-          hideTimer = 0;
-        }
-        var touch = event.touches[0];
-        press = {
-          startX: touch.clientX,
-          startY: touch.clientY,
-          repaired: false,
-          timer: 0
-        };
-        dot.classList.add('gptweb-pressing');
-        press.timer = window.setTimeout(function () {
-          if (!press) return;
-          press.timer = 0;
-          var selectedScroller = activeScroller;
-          var root = document.scrollingElement || document.documentElement;
-          if ((!selectedScroller || selectedScroller === root ||
-               !selectedScroller.isConnected) && lastContentTouch) {
-            selectedScroller = fallbackScroller(
-              lastContentTouch.target,
-              lastContentTouch.startX,
-              lastContentTouch.startY
-            ) || selectedScroller;
+
+        if (!observer && typeof MutationObserver === 'function') {
+          var container = document.querySelector('main, [role="main"]') ||
+            document.body;
+          if (container) {
+            observer = new MutationObserver(function () {
+              if (mutationTimer || attempts >= maxAttempts) return;
+              mutationTimer = window.setTimeout(attemptRepair, 90);
+            });
+            observer.observe(container, { childList: true, subtree: true });
           }
-          if (!repairScroller(selectedScroller)) return;
-          press.repaired = true;
-          dot.classList.remove('gptweb-pressing');
-          dot.classList.add('gptweb-repaired');
-        }, 360);
-        event.preventDefault();
-        event.stopPropagation();
-      }
-
-      function movePress(event) {
-        if (!press || event.touches.length !== 1) return;
-        var touch = event.touches[0];
-        var deltaX = touch.clientX - press.startX;
-        var deltaY = touch.clientY - press.startY;
-        if (!press.repaired &&
-            Math.sqrt(deltaX * deltaX + deltaY * deltaY) > 14) {
-          clearPressTimer();
-          dot.classList.remove('gptweb-pressing');
         }
-        event.preventDefault();
-        event.stopPropagation();
-      }
 
-      function finishPress(event) {
-        if (!press) return;
-        var repaired = press.repaired;
-        clearPressTimer();
-        press = null;
-        dot.classList.remove('gptweb-pressing');
-        if (repaired) {
-          hideDotSoon(320);
-        } else {
-          hideDotSoon(700);
+        if (!retryTimer) {
+          retryTimer = window.setTimeout(attemptRepair, 220);
         }
-        if (event.cancelable) event.preventDefault();
-        event.stopPropagation();
+        return false;
       }
 
-      function endPress(event) {
-        finishPress(event);
+      function armRepair() {
+        stopWatching();
+        attempts = 0;
+        deadline = Date.now() + 2800;
+        return attemptRepair();
       }
 
-      function cancelPress(event) {
-        finishPress(event);
+      window.__gptwebRepairScroll = armRepair;
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', armRepair, { once: true });
+      } else {
+        armRepair();
       }
 
-      document.addEventListener('touchstart', function (event) {
-        if (dot && dot.contains(event.target)) return;
-        if (event.touches.length !== 1) return;
-        var touch = event.touches[0];
-        pendingContentTouch = {
-          target: event.target,
-          startX: touch.clientX,
-          startY: touch.clientY
-        };
-      }, {
-        capture: true,
-        passive: true
-      });
-
-      document.addEventListener('touchmove', function (event) {
-        if (!pendingContentTouch || event.touches.length !== 1) return;
-        var touch = event.touches[0];
-        var deltaX = touch.clientX - pendingContentTouch.startX;
-        var deltaY = touch.clientY - pendingContentTouch.startY;
-        if (Math.abs(deltaY) < 5 ||
-            Math.abs(deltaY) <= Math.abs(deltaX)) {
-          return;
-        }
-        var selectedTouch = pendingContentTouch;
-        pendingContentTouch = null;
-        var path = typeof event.composedPath === 'function' ?
-          event.composedPath() :
-          null;
-        var scroller = findScroller(selectedTouch.target, path);
-        if (!scroller) return;
-        activeScroller = scroller;
-        lastContentTouch = selectedTouch;
-        lastContentSelectionAt = Date.now();
-        revealDot();
-      }, {
-        capture: true,
-        passive: true
-      });
-
-      function clearPendingContentTouch() {
-        pendingContentTouch = null;
-      }
-
-      document.addEventListener('touchend', clearPendingContentTouch, {
-        capture: true,
-        passive: true
-      });
-      document.addEventListener('touchcancel', clearPendingContentTouch, {
-        capture: true,
-        passive: true
-      });
-
-      document.addEventListener('scroll', function (event) {
-        var target = event.target;
-        var root = document.scrollingElement || document.documentElement;
-        if (target === document || target === document.documentElement) {
-          target = root;
-        }
-        var preserveNestedTarget = activeScroller &&
-          activeScroller !== root &&
-          target === root &&
-          (press || Date.now() - lastContentSelectionAt < 2400);
-        if (!preserveNestedTarget && target !== activeScroller &&
-            target && target.nodeType === 1 && target.isConnected) {
-          activeScroller = target;
-        }
-      }, {
-        capture: true,
-        passive: true
-      });
+      window.addEventListener('pageshow', armRepair, { passive: true });
+      window.addEventListener('popstate', armRepair, { passive: true });
     })();
     """
 }
@@ -2737,6 +1408,7 @@ extension WebViewController: WKNavigationDelegate {
         errorView.hide()
         lastLoadFailed = false
         recoveryAttempts.removeAll()
+        scheduleAutomaticScrollRepair()
         attemptAutomaticDocumentAttachment()
     }
 
@@ -2790,6 +1462,34 @@ extension WebViewController: WKNavigationDelegate {
         didBecome download: WKDownload
     ) {
         beginDownload(download)
+    }
+}
+
+extension WebViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let panGesture = gestureRecognizer as? UIPanGestureRecognizer else {
+            return true
+        }
+
+        let velocity = panGesture.velocity(in: view)
+        guard abs(velocity.x) > abs(velocity.y) * 1.35 else {
+            return false
+        }
+
+        if gestureRecognizer === sidebarOpenGesture {
+            return velocity.x > 0
+        }
+        if gestureRecognizer === sidebarCloseGesture {
+            return velocity.x < 0
+        }
+        return true
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        true
     }
 }
 
