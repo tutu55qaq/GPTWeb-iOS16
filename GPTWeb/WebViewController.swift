@@ -37,7 +37,9 @@ final class WebViewController: UIViewController {
         configureNativeSidebarGestures()
         configureObservers()
         configureConnectivity()
-        removeExpiredIncomingDocuments()
+        DispatchQueue.global(qos: .utility).async {
+            Self.removeExpiredIncomingDocuments()
+        }
         loadInitialPage()
     }
 
@@ -73,6 +75,7 @@ final class WebViewController: UIViewController {
 
     func prepareForBackground() {
         guard isViewLoaded else { return }
+        automaticScrollRepairWorkItem?.cancel()
         webView.evaluateJavaScript(
             "document.querySelectorAll('video,audio').forEach(function(media){ media.pause(); });",
             completionHandler: nil
@@ -223,7 +226,7 @@ final class WebViewController: UIViewController {
         presentPendingDocumentErrorIfNeeded()
     }
 
-    private func removeExpiredIncomingDocuments() {
+    private static func removeExpiredIncomingDocuments() {
         let fileManager = FileManager.default
         guard let cachesDirectory = try? fileManager.url(
             for: .cachesDirectory,
@@ -1052,10 +1055,6 @@ final class WebViewController: UIViewController {
         '[aria-label="Close sidebar"], [aria-label="关闭边栏"], ' +
         '[aria-label="关闭侧边栏"], [aria-label="收起聊天列表"]'
       );
-      var sidebar = document.getElementById('stage-popover-sidebar');
-      if (!control && sidebar) {
-        control = sidebar.querySelector('button, [role="button"]');
-      }
       if (!control || control.disabled) return false;
       control.click();
       return true;
@@ -1093,12 +1092,17 @@ final class WebViewController: UIViewController {
 
       var observer = null;
       var retryTimer = 0;
-      var mutationTimer = 0;
+      var active = false;
+      var cycleURL = '';
+      var repairedScroller = null;
+      var repairedURL = '';
+      var repairedAt = -Infinity;
       var attempts = 0;
       var deadline = 0;
       var maxAttempts = 12;
 
       function stopWatching() {
+        active = false;
         if (observer) {
           observer.disconnect();
           observer = null;
@@ -1106,10 +1110,6 @@ final class WebViewController: UIViewController {
         if (retryTimer) {
           window.clearTimeout(retryTimer);
           retryTimer = 0;
-        }
-        if (mutationTimer) {
-          window.clearTimeout(mutationTimer);
-          mutationTimer = 0;
         }
       }
 
@@ -1127,6 +1127,11 @@ final class WebViewController: UIViewController {
         var root = document.scrollingElement || document.documentElement;
         if (element === root || element === document.body) return null;
 
+        // Exclude controls and side panels before any synchronous layout read.
+        if (element.closest && element.closest(
+          '#stage-popover-sidebar, [role="menu"], pre, code, textarea, input, [contenteditable="true"]'
+        )) return null;
+
         var range = Math.max(0, element.scrollHeight - element.clientHeight);
         if (range < 12) return null;
 
@@ -1136,12 +1141,6 @@ final class WebViewController: UIViewController {
         if (rect.width < 120 || rect.height < 96 ||
             rect.right <= 0 || rect.bottom <= 0 ||
             rect.left >= viewportWidth || rect.top >= viewportHeight) {
-          return null;
-        }
-
-        if (element.closest && element.closest(
-          '#stage-popover-sidebar, [role="menu"], pre, code'
-        )) {
           return null;
         }
 
@@ -1218,6 +1217,28 @@ final class WebViewController: UIViewController {
           });
         }
 
+        var best = null;
+        var bestInspection = null;
+        var bestScore = -1;
+        function consider(candidate) {
+          var inspection = inspectScroller(candidate);
+          if (!inspection) return;
+          var score = scrollerScore(
+            inspection, focusedCandidates.indexOf(candidate) !== -1
+          );
+          if (score > bestScore) {
+            best = candidate;
+            bestInspection = inspection;
+            bestScore = score;
+          }
+        }
+        candidates.forEach(consider);
+        // A recognized visible message scroller needs no document-wide fallback.
+        if (bestInspection && (best.hasAttribute('data-scroll-root') ||
+            (bestInspection.native && bestInspection.name.indexOf('overflow') !== -1))) {
+          return best;
+        }
+
         var selector = [
           '[data-scroll-root]',
           'main [role="log"]',
@@ -1236,24 +1257,7 @@ final class WebViewController: UIViewController {
         for (var index = 0; index < limit && candidates.length < 48; index += 1) {
           if (candidates.indexOf(nodes[index]) === -1) {
             candidates.push(nodes[index]);
-          }
-        }
-
-        var best = null;
-        var bestScore = -1;
-        for (var candidateIndex = 0;
-             candidateIndex < candidates.length;
-             candidateIndex += 1) {
-          var candidate = candidates[candidateIndex];
-          var inspection = inspectScroller(candidate);
-          if (!inspection) continue;
-          var score = scrollerScore(
-            inspection,
-            focusedCandidates.indexOf(candidate) !== -1
-          );
-          if (score > bestScore) {
-            best = candidate;
-            bestScore = score;
+            consider(nodes[index]);
           }
         }
         return best;
@@ -1287,11 +1291,7 @@ final class WebViewController: UIViewController {
           window.clearTimeout(retryTimer);
           retryTimer = 0;
         }
-        if (mutationTimer) {
-          window.clearTimeout(mutationTimer);
-          mutationTimer = 0;
-        }
-        if (attempts >= maxAttempts || Date.now() > deadline) {
+        if (document.hidden || attempts >= maxAttempts || Date.now() >= deadline) {
           stopWatching();
           return false;
         }
@@ -1299,6 +1299,9 @@ final class WebViewController: UIViewController {
 
         var scroller = findScroller();
         if (scroller && repairScroller(scroller)) {
+          repairedScroller = scroller;
+          repairedURL = String(window.location.href || '');
+          repairedAt = Date.now();
           stopWatching();
           return true;
         }
@@ -1308,21 +1311,41 @@ final class WebViewController: UIViewController {
             document.body;
           if (container) {
             observer = new MutationObserver(function () {
-              if (mutationTimer || attempts >= maxAttempts) return;
-              mutationTimer = window.setTimeout(attemptRepair, 90);
+              scheduleRetry();
             });
             observer.observe(container, { childList: true, subtree: true });
           }
         }
 
-        if (!retryTimer) {
-          retryTimer = window.setTimeout(attemptRepair, 220);
-        }
+        scheduleRetry();
         return false;
       }
 
+      function scheduleRetry() {
+        if (!active || retryTimer || document.hidden) return;
+        var remaining = deadline - Date.now();
+        if (remaining <= 0 || attempts >= maxAttempts) {
+          stopWatching();
+          return;
+        }
+        // One timer shared by mutations and fallback polling. Streaming DOM updates
+        // cannot accelerate scans or extend the repair window.
+        var delay = Math.min(880, 220 * Math.pow(2, attempts - 1), remaining);
+        retryTimer = window.setTimeout(attemptRepair, delay);
+      }
+
       function armRepair() {
+        if (document.hidden || document.readyState === 'loading') return false;
+        var url = String(window.location.href || '');
+        if (active && cycleURL === url) return false;
+        if (repairedScroller && repairedScroller.isConnected &&
+            repairedURL === url && Date.now() - repairedAt < 500 &&
+            repairedScroller.getAttribute('data-gptweb-scroll-repaired') === 'true') {
+          return true;
+        }
         stopWatching();
+        active = true;
+        cycleURL = url;
         attempts = 0;
         deadline = Date.now() + 2800;
         return attemptRepair();
@@ -1336,8 +1359,20 @@ final class WebViewController: UIViewController {
         armRepair();
       }
 
-      window.addEventListener('pageshow', armRepair, { passive: true });
+      window.addEventListener('pageshow', function (event) {
+        if (event.persisted) repairedScroller = null;
+        armRepair();
+      }, { passive: true });
       window.addEventListener('popstate', armRepair, { passive: true });
+      window.addEventListener('pagehide', stopWatching, { passive: true });
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) {
+          stopWatching();
+        } else {
+          repairedScroller = null;
+          armRepair();
+        }
+      });
     })();
     """
 }

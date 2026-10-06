@@ -88,7 +88,7 @@ const manifest = JSON.parse(fs.readFileSync(
   "utf8"
 ));
 assert.equal(manifest.manifest_version, 2);
-assert.equal(manifest.version, "1.2.8");
+assert.equal(manifest.version, "1.2.9");
 assert.equal(manifest.content_scripts.length, 1);
 assert.equal(manifest.content_scripts[0].run_at, "document_start");
 assert.equal(manifest.content_scripts[0].all_frames, true);
@@ -172,6 +172,7 @@ function makeEnvironment(options = {}) {
   const timers = new Map();
   const observers = [];
   let nextTimer = 1;
+  let now = 10000;
 
   const documentElement = makeElement({
     tagName: "HTML",
@@ -240,6 +241,7 @@ function makeEnvironment(options = {}) {
     documentElement,
     scrollingElement: documentElement,
     readyState: options.readyState || "complete",
+    hidden: options.hidden || false,
     createElement() {
       return makeElement({ metrics });
     },
@@ -259,7 +261,7 @@ function makeEnvironment(options = {}) {
   };
 
   const window = {
-    location: { hostname: options.hostname || "chatgpt.com" },
+    location: { hostname: options.hostname || "chatgpt.com", href: 'https://chatgpt.com/' },
     innerWidth: 390,
     innerHeight: 844,
     addEventListener(name, handler, configuration) {
@@ -271,7 +273,7 @@ function makeEnvironment(options = {}) {
     },
     setTimeout(handler, delay) {
       const identifier = nextTimer++;
-      timers.set(identifier, { handler, delay });
+      timers.set(identifier, { handler, delay, due: now + delay });
       return identifier;
     },
     clearTimeout(identifier) {
@@ -282,12 +284,15 @@ function makeEnvironment(options = {}) {
   state.document = document;
   state.window = window;
   state.MutationObserver = MockMutationObserver;
+  state.Date = { now: () => now };
+  state.advance = (milliseconds) => { now += milliseconds; };
   state.runNextTimer = function runNextTimer() {
     const entry = [...timers.entries()].sort(
-      (left, right) => left[1].delay - right[1].delay
+      (left, right) => left[1].due - right[1].due
     )[0];
     if (!entry) return false;
     timers.delete(entry[0]);
+    now = Math.max(now, entry[1].due);
     entry[1].handler();
     return true;
   };
@@ -299,10 +304,11 @@ function makeEnvironment(options = {}) {
 }
 
 function install(environment, script = appScript) {
-  new Function("window", "document", "MutationObserver", script)(
+  new Function("window", "document", "MutationObserver", "Date", script)(
     environment.window,
     environment.document,
-    environment.MutationObserver
+    environment.MutationObserver,
+    environment.Date
   );
 }
 
@@ -368,7 +374,13 @@ for (const forbidden of ["touchstart", "touchmove", "touchend", "scroll"]) {
 }
 
 const flushesBeforeReuse = immediate.metrics.layoutFlushes;
+const metricsBeforeReuse = { ...immediate.metrics };
 immediate.window.__gptwebRepairScroll();
+immediate.windowListeners.get('pageshow').handler({ persisted: false });
+assert.deepEqual(immediate.metrics, metricsBeforeReuse,
+  'Duplicate startup triggers must perform zero DOM/layout work');
+assert.equal(immediate.metrics.selectorScans, 0,
+  'Recognized visible scroller should skip global selector fallback');
 assert.equal(immediate.metrics.layoutFlushes, flushesBeforeReuse);
 
 workScroller.isConnected = false;
@@ -383,6 +395,7 @@ install(loading);
 assert.equal(loadingScroller.getAttribute("data-gptweb-scroll-repaired"), null);
 assert.equal(loading.metrics.selectorScans, 0);
 assert.equal(loading.documentListeners.get("DOMContentLoaded").configuration.once, true);
+loading.document.readyState = 'interactive';
 loading.documentListeners.get("DOMContentLoaded").handler();
 assert.equal(loadingScroller.getAttribute("data-gptweb-scroll-repaired"), "true");
 
@@ -405,9 +418,59 @@ while (empty.runNextTimer()) {
   retries += 1;
   assert.ok(retries <= 12, "Observer retries were not bounded");
 }
-assert.equal(empty.metrics.selectorScans, 12);
+assert.equal(empty.metrics.selectorScans, 5);
 assert.equal(empty.observers[0].connected, false);
 assert.equal(empty.timers.size, 0);
+
+// Frequent streaming mutations and duplicate navigation notifications cannot
+// increase polling frequency or keep an empty-page observer alive forever.
+const busy = makeEnvironment();
+install(busy);
+for (let frame = 0; frame < 100; frame++) {
+  busy.observers[0].trigger();
+  busy.window.__gptwebRepairScroll();
+}
+assert.equal(busy.timers.size, 1);
+assert.equal(busy.metrics.selectorScans, 1);
+while (busy.runNextTimer()) {
+  busy.observers[0].trigger();
+  if (busy.timers.size) busy.window.__gptwebRepairScroll();
+}
+assert.equal(busy.metrics.selectorScans, 5);
+assert.equal(busy.observers[0].connected, false);
+
+const hidden = makeEnvironment({ hidden: true });
+install(hidden);
+assert.equal(hidden.metrics.selectorScans, 0);
+assert.equal(hidden.timers.size, 0);
+hidden.document.hidden = false;
+hidden.documentListeners.get('visibilitychange').handler();
+assert.equal(hidden.timers.size, 1);
+hidden.document.hidden = true;
+hidden.documentListeners.get('visibilitychange').handler();
+assert.equal(hidden.timers.size, 0);
+assert.equal(hidden.observers[0].connected, false);
+
+// A new URL must invalidate the short cache even if React retains the old node.
+const routed = makeEnvironment();
+createWorkScroller(routed);
+install(routed);
+routed.window.location.href = 'https://chatgpt.com/c/another';
+const nextScroller = createWorkScroller(routed);
+routed.window.__gptwebRepairScroll();
+assert.equal(nextScroller.getAttribute('data-gptweb-scroll-repaired'), 'true');
+// Same-URL replacement after the coalescing window remains repairable.
+routed.advance(501);
+const sameURLScroller = createWorkScroller(routed);
+routed.window.__gptwebRepairScroll();
+assert.equal(sameURLScroller.getAttribute('data-gptweb-scroll-repaired'), 'true');
+
+const fallback = makeEnvironment();
+const offProbeScroller = createWorkScroller(fallback);
+fallback.focused = null;
+install(fallback);
+assert.equal(offProbeScroller.getAttribute('data-gptweb-scroll-repaired'), 'true');
+assert.equal(fallback.metrics.selectorScans, 1);
 
 const excluded = makeEnvironment({ hostname: "example.com" });
 install(excluded);

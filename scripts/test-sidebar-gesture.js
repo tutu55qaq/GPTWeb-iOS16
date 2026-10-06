@@ -110,6 +110,14 @@ openButton.disabled = true;
 assert.equal(open(document), false);
 assert.equal(sidebarOpen, false);
 
+const unknownSidebar = {
+  querySelector() { return null; },
+  getElementById() {
+    return { querySelector() { throw new Error('Must not click an arbitrary sidebar button'); } };
+  }
+};
+assert.equal(close(unknownSidebar), false);
+
 console.log(
   "Native UIKit sidebar gestures, direction gating, one-shot DOM commands, " +
   "and zero webpage touch listeners passed."
